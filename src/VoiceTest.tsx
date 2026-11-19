@@ -332,7 +332,7 @@ export const VoiceTest = forwardRef<VoiceTestHandle, Props>(function VoiceTest(
         setTtsStartMs(startupMs);
         setStatus('Piper đang phát âm thanh qua PCM native...');
         const patch: Partial<VoiceTimingUpdate> = {
-          voiceTtsEngine: 'kevoice',
+          voiceTtsEngine: 'piper',
           voiceTtsModelId: OFFLINE_TTS_MODEL,
           voiceTtsStartMs: startupMs,
         };
@@ -349,7 +349,7 @@ export const VoiceTest = forwardRef<VoiceTestHandle, Props>(function VoiceTest(
         setStatus('Piper hoàn tất · sinh ' + Math.round(result.synthesisMs) +
           ' ms · RTF ' + result.realTimeFactor.toFixed(2));
         onTiming?.({
-          voiceTtsEngine: 'kevoice', voiceTtsModelId: OFFLINE_TTS_MODEL,
+          voiceTtsEngine: 'piper', voiceTtsModelId: OFFLINE_TTS_MODEL,
           voiceTtsModelLoadMs: result.loadMs, voiceTtsSynthesisMs: result.synthesisMs,
           voiceTtsAudioDurationMs: result.audioDurationMs,
           voiceTtsRealTimeFactor: result.realTimeFactor,
