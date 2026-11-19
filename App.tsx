@@ -9,7 +9,8 @@ import * as Device from 'expo-device';
 import { initLlama, type LlamaContext } from 'llama.rn';
 import { MODELS, type ModelId, type ModelSpec } from './src/models';
 import { downloadModel, isModelReady, modelPath, removeModel } from './src/modelStore';
-import { appendBenchmark, csvBenchmark, readBenchmarks, type Benchmark } from './src/bench';
+import { appendBenchmark, csvBenchmark, readBenchmarks, updateVoiceBenchmark, type Benchmark } from './src/bench';
+import { VoiceTest, type VoiceTestHandle, type VoiceRequest } from './src/VoiceTest';
 import { readChatSessions, writeChatSessions, type ChatMessage, type ChatSession } from './src/chatStore';
 import {
   buildCloudReport, clearCloudConfig, getInstallationId, pushCloudReport,
@@ -101,6 +102,7 @@ export default function App() {
   const [live, setLive] = useState<LiveMetrics | null>(null);
   const [benchmarks, setBenchmarks] = useState<Benchmark[]>([]);
   const contextRef = useRef<LlamaContext | null>(null);
+  const voiceRef = useRef<VoiceTestHandle>(null);
   const loadedRef = useRef<ModelId | null>(null);
   const stopRef = useRef(false);
   const lastRenderedRef = useRef(0);
@@ -170,6 +172,7 @@ export default function App() {
     setContextTruncated(false);
     setHistoryOpen(false);
     setPushStatus('');
+    voiceRef.current?.stop();
   }
 
   function openChat(session: ChatSession) {
@@ -187,6 +190,7 @@ export default function App() {
     setContextTruncated(false);
     setHistoryOpen(false);
     setPushStatus('');
+    voiceRef.current?.stop();
   }
 
   async function refreshModels() {
@@ -318,8 +322,8 @@ export default function App() {
     }
   }
 
-  async function send() {
-    const prompt = input.trim().slice(0, 1000);
+  async function send(override?: string, voiceRequest?: VoiceRequest) {
+    const prompt = (override ?? input).trim().slice(0, 1000);
     const context = contextRef.current;
     if (!prompt || !context || generating || busy ||
         loadedRef.current !== selectedId || loadedWindow !== contextWindow ||
@@ -374,6 +378,10 @@ export default function App() {
       platform: Platform.OS + ' ' + String(Platform.Version),
       device: deviceName, date: new Date().toISOString(),
       loadMs, gpu: context.gpu ?? null,
+      ...(voiceRequest ? {
+        voiceLocale: voiceRequest.locale,
+        voiceSttMs: voiceRequest.sttMs,
+      } : {}),
     };
 
     try {
@@ -446,6 +454,14 @@ export default function App() {
       });
       await appendBenchmark(record);
       setBenchmarks(rows => [...rows, record]);
+      if (voiceRequest && !stopRef.current) {
+        const turnIndex = next.filter(m => m.role === 'user').length;
+        voiceRef.current?.speak(finalText, voiceRequest, patch => {
+          void updateVoiceBenchmark(currentId, turnIndex, patch)
+            .then(() => readBenchmarks().then(setBenchmarks))
+            .catch(() => {});
+        });
+      }
     } catch (error) {
       const message = errorText(error);
       const failed = [...next, { id: assistantId, role: 'assistant' as const, text: 'Lỗi: ' + message }];
@@ -746,9 +762,17 @@ export default function App() {
           <View style={[s.bubble, item.role === 'user' ? s.userBubble : s.aiBubble]}>
             <Text style={s.bubbleRole}>{item.role === 'user' ? 'YOU' : 'QWEN · ' + chatModelId}</Text>
             <Text style={s.bubbleText}>{item.text || (generating ? '● ● ●' : '')}</Text>
+            {item.role === 'assistant' && !!item.text && !generating && (
+              <Pressable accessibilityRole="button" style={s.speakAnswer}
+                onPress={() => voiceRef.current?.speak(item.text)}>
+                <Text style={s.speakAnswerLabel}>🔊 Đọc trả lời</Text>
+              </Pressable>
+            )}
           </View>
         )}
       />
+      <VoiceTest ref={voiceRef} ready={chatReady} generating={generating}
+        onTranscript={(text, request) => { void send(text, request); }} />
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <View style={s.composer}>
           <TextInput
@@ -851,6 +875,8 @@ const s = StyleSheet.create({
   aiBubble: { backgroundColor: '#1b2943', alignSelf: 'flex-start' },
   bubbleRole: { color: '#a7baf2', fontSize: 9, fontWeight: '700', marginBottom: 5 },
   bubbleText: { color: '#f6f7fb', fontSize: 14, lineHeight: 21 },
+  speakAnswer: { alignSelf: 'flex-start', marginTop: 7 },
+  speakAnswerLabel: { color: ACCENT, fontSize: 11, fontWeight: '700' },
   composer: { backgroundColor: '#141e31', flexDirection: 'row', alignItems: 'flex-end',
     gap: 9, padding: 12, paddingBottom: 5 },
   input: { flex: 1, color: '#f6f7ff', backgroundColor: '#25324b', borderRadius: 11,
