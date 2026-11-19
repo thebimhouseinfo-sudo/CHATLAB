@@ -12,7 +12,9 @@
       "bundleIdentifier": "com.thebimhouseinfo.chatlab",
       "infoPlist": {
         "UIFileSharingEnabled": true,
-        "LSSupportsOpeningDocumentsInPlace": true
+        "LSSupportsOpeningDocumentsInPlace": true,
+        "NSMicrophoneUsageDescription": "CHATLAB sử dụng microphone khi bạn chủ động bật Voice Test.",
+        "NSSpeechRecognitionUsageDescription": "CHATLAB sử dụng dịch vụ nhận dạng giọng nói theo yêu cầu trong Voice Test."
       }
     },
     "android": {
@@ -22,6 +24,18 @@
       ]
     },
     "plugins": [
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "CHATLAB cần microphone để nhận câu nói khi bạn nhấn Nói.",
+          "speechRecognitionPermission": "CHATLAB nhận dạng giọng nói thành chữ để thử voice benchmark.",
+          "androidSpeechServicePackages": [
+            "com.google.android.googlequicksearchbox",
+            "com.google.android.tts",
+            "com.google.android.as"
+          ]
+        }
+      ],
       "expo-secure-store",
       [
         "expo-build-properties",
