@@ -34,6 +34,7 @@ type Props = {
   generating: boolean;
   onTranscript: (text: string, request: VoiceRequest, autoSend: boolean) => void;
   autoSend?: boolean;
+  mode: 'text' | 'voice';
 };
 type MicRun = {
   startedAt: number;
@@ -49,7 +50,7 @@ const MUTED = '#9daec7';
 const fmt = (value: number | null) => value == null ? '—' : Math.round(value) + ' ms';
 
 export const VoiceTest = forwardRef<VoiceTestHandle, Props>(function VoiceTest(
-  { ready, generating, onTranscript, autoSend = false }, ref,
+  { ready, generating, onTranscript, autoSend = false, mode }, ref,
 ) {
   const [locale, setLocale] = useState<VoiceLocale>('vi-VN');
   const [sttEngine, setSttEngine] = useState<'offline' | 'system'>('offline');
@@ -57,7 +58,8 @@ export const VoiceTest = forwardRef<VoiceTestHandle, Props>(function VoiceTest(
   const [installingStt, setInstallingStt] = useState(false);
   const [sttInstallStatus, setSttInstallStatus] = useState('');
   const [sttBusy, setSttBusy] = useState(false);
-  const [ttsEngine, setTtsEngine] = useState<'system' | 'offline'>('system');
+  // Prefer real on-device PCM speech: OEM Android system TTS did not start on Beam Pro.
+  const [ttsEngine, setTtsEngine] = useState<'system' | 'offline'>('offline');
   const [ttsInstalled, setTtsInstalled] = useState(false);
   const [installingTts, setInstallingTts] = useState(false);
   const [ttsInstallStatus, setTtsInstallStatus] = useState('');
@@ -99,7 +101,7 @@ export const VoiceTest = forwardRef<VoiceTestHandle, Props>(function VoiceTest(
       .then(installed => { if (active) setSttInstalled(installed); })
       .catch(() => {});
     void offlineTtsReady()
-      .then(installed => { if (active) setTtsInstalled(installed); })
+      .then(installed => { if (active) { setTtsInstalled(installed); if (installed) setTtsEngine('offline'); } })
       .catch(() => {});
     void Speech.getAvailableVoicesAsync()
       .then(voices => { if (active) setSystemVoices(voices); })
@@ -217,7 +219,7 @@ export const VoiceTest = forwardRef<VoiceTestHandle, Props>(function VoiceTest(
     setStatus('Whisper đang nhận dạng tiếng Việt / English trên thiết bị...');
     const startAt = offlineMicStarted.current;
     try {
-      const result = await recorder.stopAndTranscribe();
+      const result = await recorder.stopAndTranscribe(locale === 'vi-VN' ? 'vi' : 'en');
       if (!result.text) {
         setStatus('Whisper chưa nhận được câu rõ ràng; thử nói sát mic hơn.');
         return;
@@ -317,7 +319,10 @@ export const VoiceTest = forwardRef<VoiceTestHandle, Props>(function VoiceTest(
         return;
       }
       if (!ttsInstalled) {
-        setStatus('Hãy tải Piper VI (~22 MB) trước khi chọn TTS offline.');
+        const msg = 'Chưa cài giọng Piper VI. Vào Voice Chat → ⚙ Giọng để tải model (~22 MB).';
+        setSpeechError(msg); setStatus(msg);
+        onTiming?.({ voiceTtsStatus: 'error', voiceTtsEngine: 'piper',
+          voiceTtsModelId: OFFLINE_TTS_MODEL });
         return;
       }
       if (watchdogRef.current !== null) clearTimeout(watchdogRef.current);
@@ -463,110 +468,113 @@ export const VoiceTest = forwardRef<VoiceTestHandle, Props>(function VoiceTest(
 
   useImperativeHandle(ref, () => ({ speak, stop: stopVoice }));
 
+  if (mode === 'text') return null;
+
   return (
     <View style={styles.panel}>
-      <View style={styles.controls}>
-        <Pressable accessibilityRole="button" onPress={() => listening ? stopMic() : void startMic()}
-          disabled={generating || sttBusy || installingStt || (!listening && !ready)}
-          style={[styles.button, (generating || sttBusy || installingStt || (!listening && !ready)) && styles.disabled]}>
-          <Text style={styles.buttonText}>{sttBusy ? 'STT...' : listening ? '■ Chốt Mic' : '🎙 ' + (sttEngine === 'offline' ? 'Whisper' : 'Hệ thống')}</Text>
+      <Text style={styles.modeTitle}>VOICE CHAT · Local Qwen</Text>
+      <Text style={styles.modeHint}>Nhấn mic để nói → nhấn lần nữa để kết thúc. Qwen trả lời bằng chữ và tự đọc tiếng.</Text>
+      <View style={styles.micRow}>
+        <Pressable accessibilityRole="button" accessibilityLabel={listening ? 'Dừng ghi âm và gửi' : 'Bắt đầu ghi âm'}
+          style={[styles.mic, listening && styles.micActive,
+            (sttBusy || generating || installingStt) && styles.disabled]}
+          disabled={sttBusy || generating || installingStt || (!listening && !ready)}
+          onPress={() => listening ? stopMic() : void startMic()}>
+          <Text style={styles.micIcon}>{listening ? '■' : '🎙'}</Text>
+          <Text style={styles.micLabel}>{sttBusy ? 'Đang nhận dạng' : listening ? 'Dừng & gửi' : generating ? 'Qwen đang trả lời' : 'Nói'}</Text>
         </Pressable>
-        <Pressable accessibilityRole="button" onPress={() => {
-            setLocale(locale === 'vi-VN' ? 'en-US' : 'vi-VN');
-            setVoiceIndex(0);
-          }}
-          disabled={listening || generating} style={styles.locale}>
-          <Text style={styles.localeText}>{locale} ⇄</Text>
-        </Pressable>
-        {speaking && (
-          <Pressable accessibilityRole="button" onPress={stopVoice} style={styles.locale}>
-            <Text style={styles.localeText}>■ Dừng đọc</Text>
-          </Pressable>
-        )}
       </View>
-      <View style={styles.audioTests}>
-        <Pressable accessibilityRole="button" style={styles.audioTestButton}
-          disabled={speaking || installingTts} onPress={() => {
-            setTtsEngine(x => x === 'offline' ? 'system' : 'offline');
-            setStatus('TTS engine đã chuyển. Nhấn Thử loa VI.');
-          }}>
-          <Text style={styles.audioTestLabel}>TTS: {ttsEngine === 'offline' ? 'Piper AI' : 'Hệ thống'} ⇄</Text>
-        </Pressable>
-        {ttsEngine === 'offline' && !ttsInstalled &&
-          <Pressable accessibilityRole="button" style={styles.audioTestButton}
-            disabled={installingTts} onPress={() => void installTtsModel()}>
-            <Text style={styles.audioTestLabel}>{installingTts ? 'Đang tải TTS...' : '↓ Tải Piper VI (~22 MB)'}</Text>
+      <Text style={styles.status} numberOfLines={4}>{status}</Text>
+      <View style={styles.quickRow}>
+        {(speaking || status.includes('đang tạo âm thanh')) &&
+          <Pressable accessibilityRole="button" onPress={stopVoice} style={styles.quickButton}>
+            <Text style={styles.quickLabel}>■ Dừng đọc</Text>
           </Pressable>}
-        {!sttInstalled && <Pressable accessibilityRole="button"
-          disabled={installingStt || generating} style={styles.audioTestButton}
+        <Pressable accessibilityRole="button" onPress={() => setDetailsOpen(!detailsOpen)}
+          style={styles.quickButton}>
+          <Text style={styles.quickLabel}>⚙ Giọng {detailsOpen ? '▲' : '▼'}</Text>
+        </Pressable>
+      </View>
+      {!sttInstalled && sttEngine === 'offline' &&
+        <Pressable accessibilityRole="button" style={styles.download} disabled={installingStt}
           onPress={() => void installModel()}>
-          <Text style={styles.audioTestLabel}>{installingStt ? 'Đang tải STT...' : '↓ Tải STT offline (~116 MB)'}</Text>
+          <Text style={styles.downloadLabel}>{installingStt ? 'Đang tải STT…' : '↓ Cài STT tiếng Việt (Whisper)'}</Text>
         </Pressable>}
-        <Pressable accessibilityRole="button" style={styles.audioTestButton}
-          disabled={listening || sttBusy}
-          onPress={() => {
-            setSttEngine(x => x === 'offline' ? 'system' : 'offline');
-            setStatus('STT engine đã chuyển, nhấn Mic để thử.');
-          }}>
-          <Text style={styles.audioTestLabel}>STT: {sttEngine === 'offline' ? 'Whisper (offline)' : 'Android'} ⇄</Text>
-        </Pressable>
-        <Pressable accessibilityRole="button" style={styles.audioTestButton}
-          disabled={generating} onPress={() => speak('Xin chào. Đây là thử nghiệm giọng tiếng Việt.')}>
-          <Text style={styles.audioTestLabel}>🔊 Thử loa VI</Text>
-        </Pressable>
-        {detailsOpen && <Pressable accessibilityRole="button" style={styles.audioTestButton}
-          disabled={generating} onPress={() => speak('Hello. This is the English voice test.', undefined, undefined, true)}>
-          <Text style={styles.audioTestLabel}>🔊 Thử loa EN</Text>
+      {!ttsInstalled && ttsEngine === 'offline' &&
+        <Pressable accessibilityRole="button" style={styles.download} disabled={installingTts}
+          onPress={() => void installTtsModel()}>
+          <Text style={styles.downloadLabel}>{installingTts ? 'Đang tải TTS…' : '↓ Cài giọng Việt (Piper)'}</Text>
         </Pressable>}
-        <Pressable accessibilityRole="button" style={styles.audioTestButton}
-          onPress={() => setDetailsOpen(!detailsOpen)}>
-          <Text style={styles.audioTestLabel}>{detailsOpen ? '▲ Ẩn chi tiết' : '⚙ Giọng / lỗi'}</Text>
-        </Pressable>
-        {(speaking || status.includes('Đang khởi động')) &&
-          <Pressable accessibilityRole="button" style={styles.audioTestButton} onPress={stopVoice}>
-            <Text style={styles.audioTestLabel}>■ Dừng</Text>
-          </Pressable>}
-      </View>
-      {detailsOpen && <Pressable accessibilityRole="button" style={styles.voicePicker}
-        disabled={speaking || generating} onPress={() => setVoiceIndex(i => i + 1)}>
-        <Text style={styles.voicePickerText}>Giọng hệ thống: {voiceLabel} ({locale})
-          {available.length > 1 ? ' · Nhấn để đổi (' + available.length + ')' : ''}
-        </Text>
-      </Pressable>}
-      {!!sttInstallStatus && <Text style={styles.status}>{sttInstallStatus}</Text>}
-      {!!ttsInstallStatus && <Text style={styles.status}>{ttsInstallStatus}</Text>}
-      <Text style={styles.status} numberOfLines={3}>{status}</Text>
-      {detailsOpen && <Text style={styles.metrics}>
-        Mic → chữ: {fmt(sttMs)} · TTS start: {fmt(ttsStartMs)} ·
-        {' '}Mic → TTS: {fmt(roundtripMs)} · Đọc: {fmt(ttsDurationMs)}
-      </Text>}
-      {detailsOpen && !!speechError && <Text style={styles.errorText}>{speechError}</Text>}
-      {detailsOpen && <Text style={styles.note}>
-        STT services: {sttServices.length ? sttServices.join(', ') : 'không tìm thấy qua API'}.
-        Đây là APK native: STT/TTS qua hệ thống; Qwen local.
-        Thời gian Mic → chữ gồm cả lúc nói; TTS start đo callback, không phải mẫu âm thanh đầu tiên.
-      </Text>}
+      {!!sttInstallStatus && <Text style={styles.progress} numberOfLines={2}>{sttInstallStatus}</Text>}
+      {!!ttsInstallStatus && <Text style={styles.progress} numberOfLines={2}>{ttsInstallStatus}</Text>}
+      {detailsOpen &&
+        <View style={styles.details}>
+          <Text style={styles.detailHeader}>THIẾT LẬP GIỌNG · DÙNG ĐỂ BENCHMARK</Text>
+          <View style={styles.quickRow}>
+            <Pressable accessibilityRole="button" style={styles.quickButton}
+              disabled={listening || sttBusy}
+              onPress={() => { setSttEngine(x => x === 'offline' ? 'system' : 'offline'); setStatus('Đã đổi STT.'); }}>
+              <Text style={styles.quickLabel}>STT: {sttEngine === 'offline' ? 'Whisper local' : 'Android'} ⇄</Text>
+            </Pressable>
+            <Pressable accessibilityRole="button" style={styles.quickButton}
+              disabled={speaking || generating}
+              onPress={() => { stopVoice(); setTtsEngine(x => x === 'offline' ? 'system' : 'offline'); setStatus('Đã đổi TTS.'); }}>
+              <Text style={styles.quickLabel}>TTS: {ttsEngine === 'offline' ? 'Piper local' : 'Android'} ⇄</Text>
+            </Pressable>
+            <Pressable accessibilityRole="button" style={styles.quickButton}
+              disabled={listening || sttBusy}
+              onPress={() => { setLocale(x => x === 'vi-VN' ? 'en-US' : 'vi-VN'); setVoiceIndex(0); }}>
+              <Text style={styles.quickLabel}>{locale === 'vi-VN' ? 'Tiếng Việt' : 'English'} ⇄</Text>
+            </Pressable>
+          </View>
+          <View style={styles.quickRow}>
+            <Pressable accessibilityRole="button" style={styles.quickButton}
+              onPress={() => speak('Xin chào. Đây là bản thử giọng tiếng Việt.')}>
+              <Text style={styles.quickLabel}>🔊 Thử tiếng Việt</Text>
+            </Pressable>
+            <Pressable accessibilityRole="button" style={styles.quickButton}
+              onPress={() => speak('Hello. This is a speech test.', undefined, undefined, true)}>
+              <Text style={styles.quickLabel}>🔊 Thử tiếng Anh</Text>
+            </Pressable>
+            {ttsEngine === 'system' &&
+              <Pressable accessibilityRole="button" style={styles.quickButton}
+                onPress={() => setVoiceIndex(i => i + 1)}>
+                <Text style={styles.quickLabel}>Giọng: {voiceLabel}</Text>
+              </Pressable>}
+          </View>
+          {!!speechError && <Text style={styles.errorText}>{speechError}</Text>}
+          <Text style={styles.metrics}>STT: {fmt(sttMs)} · TTS start: {fmt(ttsStartMs)} · Mic→Loa: {fmt(roundtripMs)} · Audio: {fmt(ttsDurationMs)}</Text>
+          <Text style={styles.note}>Nhận dạng: {sttEngine === 'offline' ? OFFLINE_STT_MODEL : 'SpeechRecognizer'}.
+            Phát: {ttsEngine === 'offline' ? OFFLINE_TTS_MODEL : 'Android TTS'}.
+            STT offline mặc định tiếng Việt; có thể chứa từ English. Không có VAD tự động dừng.</Text>
+        </View>}
     </View>
   );
 });
 
 const styles = StyleSheet.create({
-  panel: { backgroundColor: BG, paddingHorizontal: 12, paddingVertical: 8,
-    borderTopWidth: 1, borderTopColor: '#34415c' },
-  controls: { flexDirection: 'row', gap: 8, alignItems: 'center' },
-  button: { backgroundColor: '#8faaff', paddingHorizontal: 11, paddingVertical: 9, borderRadius: 9 },
-  buttonText: { color: '#091528', fontSize: 12, fontWeight: '800' },
-  disabled: { opacity: 0.4 },
-  locale: { backgroundColor: '#31405f', paddingHorizontal: 9, paddingVertical: 9, borderRadius: 9 },
-  localeText: { color: FG, fontSize: 11, fontWeight: '700' },
-  audioTests: { flexDirection: 'row', gap: 6, paddingTop: 6, flexWrap: 'wrap' },
-  audioTestButton: { backgroundColor: '#253d5e', paddingVertical: 7,
-    paddingHorizontal: 10, borderRadius: 8 },
-  audioTestLabel: { color: '#e8f0ff', fontSize: 11, fontWeight: '700' },
-  errorText: { color: '#ffb7ab', fontSize: 11, paddingTop: 5 },
-  voicePicker: { backgroundColor: '#263653', borderRadius: 7, padding: 7, marginTop: 4 },
-  voicePickerText: { color: FG, fontSize: 11 },
-  status: { color: '#bdcfff', marginTop: 5, fontSize: 11 },
-  metrics: { color: FG, marginTop: 5, fontSize: 10 },
-  note: { color: MUTED, marginTop: 4, fontSize: 9, lineHeight: 13 },
+  panel: { backgroundColor: '#111b30', paddingHorizontal: 14, paddingVertical: 12,
+    borderTopWidth: 1, borderTopColor: '#2e3c5a', alignItems: 'center' },
+  modeTitle: { color: FG, fontSize: 12, fontWeight: '800', letterSpacing: 1 },
+  modeHint: { color: MUTED, fontSize: 11, textAlign: 'center', marginTop: 5 },
+  micRow: { alignItems: 'center', justifyContent: 'center', paddingVertical: 13 },
+  mic: { width: 112, height: 112, borderRadius: 56, backgroundColor: '#384d85',
+    justifyContent: 'center', alignItems: 'center', borderWidth: 2, borderColor: '#829bef' },
+  micActive: { backgroundColor: '#8b3e58', borderColor: '#ffa5bc' },
+  micIcon: { fontSize: 31, color: FG },
+  micLabel: { fontSize: 12, color: FG, fontWeight: '800', paddingTop: 5 },
+  disabled: { opacity: 0.5 },
+  status: { color: '#d7e5ff', fontSize: 12, textAlign: 'center', lineHeight: 18, marginBottom: 8 },
+  quickRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 7, justifyContent: 'center', marginVertical: 4 },
+  quickButton: { paddingHorizontal: 10, paddingVertical: 8, borderRadius: 9, backgroundColor: '#2e3d59' },
+  quickLabel: { color: FG, fontSize: 11, fontWeight: '700' },
+  download: { backgroundColor: '#3f598e', borderRadius: 9, padding: 9, marginTop: 7 },
+  downloadLabel: { color: FG, fontSize: 12, fontWeight: '800' },
+  progress: { color: '#a8c7ff', fontSize: 11, marginTop: 6, textAlign: 'center' },
+  details: { alignItems: 'center', width: '100%', borderTopColor: '#314362',
+    borderTopWidth: 1, marginTop: 8, paddingTop: 10 },
+  detailHeader: { color: MUTED, fontWeight: '700', fontSize: 10, marginBottom: 5 },
+  errorText: { color: '#ffb7ab', fontSize: 11, marginTop: 7 },
+  metrics: { color: FG, fontSize: 10, paddingVertical: 7 },
+  note: { color: MUTED, fontSize: 10, lineHeight: 15, textAlign: 'center' },
 });
