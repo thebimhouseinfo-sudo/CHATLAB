@@ -93,7 +93,7 @@ export class OfflineSttRecorder {
     }
   }
 
-  async stopAndTranscribe(): Promise<OfflineSttResult> {
+  async stopAndTranscribe(language: 'vi' | 'en' = 'vi'): Promise<OfflineSttResult> {
     const startedAt = this.startedAt;
     if (!startedAt) throw new Error('Mic chưa bắt đầu ghi âm.');
     await this.close();
@@ -115,7 +115,9 @@ export class OfflineSttRecorder {
       modelPath: { type: 'file', path: modelInfo.localPath },
       modelType: 'whisper',
       preferInt8: true,
-      modelOptions: { whisper: { task: 'transcribe' } },
+      // sherpa-onnx's Whisper default is ENGLISH even for multilingual weights.
+      // Force VI by default; the model still transcribes embedded English words.
+      modelOptions: { whisper: { language, task: 'transcribe' } },
     });
     const modelLoadMs = Date.now() - loadStart;
     try {
