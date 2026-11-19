@@ -84,6 +84,7 @@ export default function App() {
   const [modelsOpen, setModelsOpen] = useState(true);
   const [activeTab, setActiveTab] = useState<'chat' | 'settings'>('chat');
   const [benchExpanded, setBenchExpanded] = useState(false);
+  const [autoSendVoice, setAutoSendVoice] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [activeChatId, setActiveChatId] = useState(idFor);
   const [chatModelId, setChatModelId] = useState<ModelId>('qwen08-q4');
@@ -601,12 +602,12 @@ export default function App() {
           <Text style={s.title}>CHATLAB</Text>
           <Text style={s.subtitle}>LOCAL · NATIVE LLM · {deviceText}</Text>
         </View>
-        <View style={s.headerActions}>
+        {activeTab === 'chat' && <View style={s.headerActions}>
           <Action title={historyOpen ? 'Ẩn chat' : 'Lịch sử'} subtle
             onPress={() => { setHistoryOpen(!historyOpen); setModelsOpen(false); }} disabled={generating} />
           <Action title="+ New Chat" onPress={() => newChat(loadedRef.current ?? selectedId)}
             disabled={generating || busy} />
-        </View>
+        </View>}
       </View>
 
       {activeTab === 'chat' && historyOpen && (
@@ -734,6 +735,17 @@ export default function App() {
         {!!pushStatus && <Text style={s.cloudStatus}>{pushStatus}</Text>}
       </View>
           <View style={s.settingsExtras}>
+            <Text style={s.sectionTitle}>VOICE TEST</Text>
+            <Pressable accessibilityRole="checkbox"
+              accessibilityState={{ checked: autoSendVoice }}
+              onPress={() => setAutoSendVoice(!autoSendVoice)}
+              style={s.voicePreference}>
+              <Text style={s.voicePreferenceCheck}>{autoSendVoice ? '☑' : '☐'}</Text>
+              <View style={{flex: 1}}>
+                <Text style={s.voicePreferenceTitle}>Tự gửi sau khi nhận giọng nói</Text>
+                <Text style={s.small}>Mặc định tắt: mở trình soạn để sửa STT tiếng Việt xen English.</Text>
+              </View>
+            </Pressable>
             <Text style={s.sectionTitle}>BENCHMARK DATA</Text>
             <View style={s.actionRow}>
               <Action title={'Export CSV (' + benchmarks.length + ')'}
@@ -806,7 +818,7 @@ export default function App() {
           </View>
         )}
       />
-      <VoiceTest ref={voiceRef} ready={chatReady} generating={generating}
+      <VoiceTest ref={voiceRef} ready={chatReady} generating={generating} autoSend={autoSendVoice}
         onTranscript={(text, request, autoSend) => {
           setInput(text);
           setDraftVoiceRequest(request);
@@ -884,6 +896,10 @@ const s = StyleSheet.create({
   settingsHeading: { color: '#f4f7ff', fontSize: 18, fontWeight: '800', paddingHorizontal: 14, paddingTop: 14 },
   settingsHint: { color: MUTED, fontSize: 11, paddingHorizontal: 14, paddingTop: 5, paddingBottom: 8 },
   settingsExtras: { paddingHorizontal: 14, paddingTop: 15, paddingBottom: 20 },
+  voicePreference: { flexDirection: 'row', alignItems: 'center', gap: 10,
+    paddingVertical: 12, marginBottom: 12 },
+  voicePreferenceCheck: { color: ACCENT, fontSize: 23 },
+  voicePreferenceTitle: { color: '#f1f5ff', fontWeight: '700', fontSize: 13 },
   chatModelBar: { minHeight: 42, backgroundColor: PANEL, paddingHorizontal: 14,
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 6 },
   chatModelLabel: { color: '#eff4ff', fontSize: 12, fontWeight: '700', flex: 1 },
