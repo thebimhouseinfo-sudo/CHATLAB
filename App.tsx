@@ -81,7 +81,9 @@ export default function App() {
   const [promptTokens, setPromptTokens] = useState<number | null>(null);
   const [peakPromptTokens, setPeakPromptTokens] = useState(0);
   const [contextTruncated, setContextTruncated] = useState(false);
-  const [modelsOpen, setModelsOpen] = useState(false);
+  const [modelsOpen, setModelsOpen] = useState(true);
+  const [activeTab, setActiveTab] = useState<'chat' | 'settings'>('chat');
+  const [benchExpanded, setBenchExpanded] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [activeChatId, setActiveChatId] = useState(idFor);
   const [chatModelId, setChatModelId] = useState<ModelId>('qwen08-q4');
@@ -100,6 +102,7 @@ export default function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [composerExpanded, setComposerExpanded] = useState(false);
+  const [draftVoiceRequest, setDraftVoiceRequest] = useState<VoiceRequest | null>(null);
   const [live, setLive] = useState<LiveMetrics | null>(null);
   const [benchmarks, setBenchmarks] = useState<Benchmark[]>([]);
   const contextRef = useRef<LlamaContext | null>(null);
@@ -174,6 +177,8 @@ export default function App() {
     setHistoryOpen(false);
     setPushStatus('');
     setComposerExpanded(false);
+    setDraftVoiceRequest(null);
+    setActiveTab('chat');
     voiceRef.current?.stop();
   }
 
@@ -193,6 +198,8 @@ export default function App() {
     setHistoryOpen(false);
     setPushStatus('');
     setComposerExpanded(false);
+    setDraftVoiceRequest(null);
+    setActiveTab('chat');
     voiceRef.current?.stop();
   }
 
@@ -331,6 +338,7 @@ export default function App() {
     if (!prompt || !context || generating || busy ||
         loadedRef.current !== selectedId || loadedWindow !== contextWindow ||
         chatModelRef.current !== selectedId) return;
+    const speechRequest = voiceRequest ?? draftVoiceRequest ?? undefined;
     setGenerating(true);
     stopRef.current = false;
 
@@ -365,6 +373,7 @@ export default function App() {
     }
 
     setInput('');
+    setDraftVoiceRequest(null);
     setComposerExpanded(false);
     Keyboard.dismiss();
     const currentId = chatIdRef.current;
@@ -383,9 +392,9 @@ export default function App() {
       platform: Platform.OS + ' ' + String(Platform.Version),
       device: deviceName, date: new Date().toISOString(),
       loadMs, gpu: context.gpu ?? null,
-      ...(voiceRequest ? {
-        voiceLocale: voiceRequest.locale,
-        voiceSttMs: voiceRequest.sttMs,
+      ...(speechRequest ? {
+        voiceLocale: speechRequest.locale,
+        voiceSttMs: speechRequest.sttMs,
       } : {}),
     };
 
@@ -459,9 +468,9 @@ export default function App() {
       });
       await appendBenchmark(record);
       setBenchmarks(rows => [...rows, record]);
-      if (voiceRequest && !stopRef.current) {
+      if (speechRequest && !stopRef.current) {
         const turnIndex = next.filter(m => m.role === 'user').length;
-        voiceRef.current?.speak(finalText, voiceRequest, patch => {
+        voiceRef.current?.speak(finalText, speechRequest, patch => {
           void updateVoiceBenchmark(currentId, turnIndex, patch)
             .then(() => readBenchmarks().then(setBenchmarks))
             .catch(() => {});
@@ -600,7 +609,7 @@ export default function App() {
         </View>
       </View>
 
-      {historyOpen && (
+      {activeTab === 'chat' && historyOpen && (
         <View style={s.historyPanel}>
           <Text style={s.sectionTitle}>HỘI THOẠI ĐÃ LƯU · {sessions.length}</Text>
           <ScrollView style={s.historyList} nestedScrollEnabled>
@@ -617,6 +626,12 @@ export default function App() {
         </View>
       )}
 
+
+      {activeTab === 'settings' ? (
+        <ScrollView style={s.settingsScroll} contentContainerStyle={s.settingsContent}
+          keyboardShouldPersistTaps="handled">
+          <Text style={s.settingsHeading}>Cài đặt & quản lý model</Text>
+          <Text style={s.settingsHint}>Tải/nạp model, chọn CTX và cấu hình báo cáo. Chat vẫn được giữ nguyên.</Text>
       <View style={s.catalogue}>
         <Pressable accessibilityRole="button" disabled={changing}
           style={s.modelHeader} onPress={() => { setModelsOpen(!modelsOpen); setHistoryOpen(false); }}>
@@ -677,35 +692,6 @@ export default function App() {
         )}
         {busy && <View style={s.loading}><ActivityIndicator color={ACCENT}/><Text style={s.small}>Đang nạp / giải phóng model...</Text></View>}
       </View>
-
-      <View style={s.metricsPanel}>
-        <View style={s.contextInfo}>
-          <Text style={s.small}>CHAT #{turns} lượt · CTX {loadedWindow ? loadedWindow / 1024 + 'K' : '—'}
-            {' · '}Prompt {promptTokens === null ? '—' : promptTokens} / {contextWindow} tokens
-            {usage === null ? '' : ' (' + usage + '%)'}
-            {' · '}Peak {peakPromptTokens}</Text>
-          {(contextTruncated || (usage !== null && usage >= 85)) &&
-            <Text style={s.contextDanger}>{contextTruncated ? 'ĐÃ TRUNCATE' : 'SẮP ĐẦY CONTEXT'}</Text>}
-        </View>
-        {storageWarning ? <Text style={s.contextDanger}>{storageWarning}</Text> : null}
-        <View style={s.metricsHeader}>
-          <Text style={s.sectionTitle}>LIVE BENCHMARK</Text>
-          <Text style={s.metricsStatus}>{live?.status ?? 'Chưa có lượt chat'}</Text>
-        </View>
-        <View style={s.metricsRow}>
-          <Metric label="FIRST TOKEN" value={fmt(live?.ttftMs, 0)} unit="ms" />
-          <Metric label="DECODE" value={fmt(live?.speed)} unit="tok/s" />
-          <Metric label="PREFILL" value={fmt(live?.prefill)} unit="tok/s" />
-          <Metric label="TOKENS" value={fmt(live?.tokens, 0)} />
-        </View>
-        <View style={s.metricsBottom}>
-          <Text style={s.small}>Load: {loadedId ? fmt(loadMs, 0) + ' ms' : '—'} · Total: {fmt(live?.totalMs, 0)} ms</Text>
-          <Pressable disabled={!benchmarks.length || generating} onPress={() => void exportResults()}>
-            <Text style={[s.export, !benchmarks.length && s.muted]}>Export CSV ({benchmarks.length})</Text>
-          </Pressable>
-        </View>
-      </View>
-
       <View style={s.cloudPanel}>
         <View style={s.cloudTop}>
           <View style={{ flex: 1 }}>
@@ -747,7 +733,51 @@ export default function App() {
         </View>
         {!!pushStatus && <Text style={s.cloudStatus}>{pushStatus}</Text>}
       </View>
+          <View style={s.settingsExtras}>
+            <Text style={s.sectionTitle}>BENCHMARK DATA</Text>
+            <View style={s.actionRow}>
+              <Action title={'Export CSV (' + benchmarks.length + ')'}
+                onPress={() => void exportResults()} disabled={!benchmarks.length || generating} />
+            </View>
+            <Text style={s.small}>Push Report chỉ chạy khi bạn nhấn nút và chỉ áp dụng cho chat đang chọn.</Text>
+          </View>
+        </ScrollView>
+      ) : (
+        <View style={s.chatWorkspace}>
+          <Pressable accessibilityRole="button" style={s.chatModelBar}
+            onPress={() => setActiveTab('settings')}>
+            <Text style={s.chatModelLabel} numberOfLines={1}>
+              {loadedId === selectedId && loadedWindow === contextWindow ? '● ' : '○ '}
+              {selected.name} · {selected.quant}
+            </Text>
+            <Text style={s.chatModelAction}>⇄ Model / CTX</Text>
+          </Pressable>
+      <View style={s.metricsPanel}>
+        <View style={s.contextInfo}>
+          <Text style={s.small}>CHAT #{turns} lượt · CTX {loadedWindow ? loadedWindow / 1024 + 'K' : '—'}
+            {' · '}Prompt {promptTokens === null ? '—' : promptTokens} / {contextWindow} tokens
+            {usage === null ? '' : ' (' + usage + '%)'}
+            {' · '}Peak {peakPromptTokens}</Text>
+          {(contextTruncated || (usage !== null && usage >= 85)) &&
+            <Text style={s.contextDanger}>{contextTruncated ? 'ĐÃ TRUNCATE' : 'SẮP ĐẦY CONTEXT'}</Text>}
+        </View>
+        {storageWarning ? <Text style={s.contextDanger}>{storageWarning}</Text> : null}
+        <Pressable accessibilityRole="button" style={s.metricsHeader}
+          onPress={() => setBenchExpanded(!benchExpanded)}>
+          <Text style={s.sectionTitle}>BENCHMARK · {fmt(live?.speed)} tok/s · TTFT {fmt(live?.ttftMs,0)} ms</Text>
+          <Text style={s.metricsStatus}>{benchExpanded ? '▲ Thu gọn' : '▼ Chi tiết'}</Text>
+        </Pressable>
+        {benchExpanded && <View style={s.metricsRow}>
+          <Metric label="FIRST TOKEN" value={fmt(live?.ttftMs, 0)} unit="ms" />
+          <Metric label="DECODE" value={fmt(live?.speed)} unit="tok/s" />
+          <Metric label="PREFILL" value={fmt(live?.prefill)} unit="tok/s" />
+          <Metric label="TOKENS" value={fmt(live?.tokens, 0)} />
+        </View>}
+        {benchExpanded && <View style={s.metricsBottom}>
+          <Text style={s.small}>Load: {loadedId ? fmt(loadMs, 0) + ' ms' : '—'} · Total: {fmt(live?.totalMs, 0)} ms</Text>
 
+        </View>}
+      </View>
       <FlatList
         ref={listRef} style={s.chat} contentContainerStyle={s.chatInner}
         data={messages} keyExtractor={m => m.id}
@@ -779,6 +809,7 @@ export default function App() {
       <VoiceTest ref={voiceRef} ready={chatReady} generating={generating}
         onTranscript={(text, request, autoSend) => {
           setInput(text);
+          setDraftVoiceRequest(request);
           if (autoSend) {
             void send(text, request);
           } else {
@@ -799,6 +830,21 @@ export default function App() {
               disabled={!input.trim() || !chatReady} />}
       </View>
       <Text style={s.footer}>Giữ bản nháp khi sửa · Context {contextWindow / 1024}K · tối đa {MAX_PREDICT} tokens/lượt</Text>
+        </View>
+      )}
+      <View style={s.tabBar}>
+        <Pressable accessibilityRole="tab" accessibilityState={{selected: activeTab === 'chat'}}
+          style={[s.tabButton, activeTab === 'chat' && s.tabSelected]}
+          onPress={() => setActiveTab('chat')}>
+          <Text style={[s.tabLabel, activeTab === 'chat' && s.tabLabelSelected]}>◉ Chat</Text>
+        </Pressable>
+        <Pressable accessibilityRole="tab" accessibilityState={{selected: activeTab === 'settings'}}
+          disabled={generating}
+          style={[s.tabButton, activeTab === 'settings' && s.tabSelected]}
+          onPress={() => { setActiveTab('settings'); setHistoryOpen(false); }}>
+          <Text style={[s.tabLabel, activeTab === 'settings' && s.tabLabelSelected]}>⚙ Cài đặt</Text>
+        </Pressable>
+      </View>
       <Modal visible={composerExpanded} animationType="slide" presentationStyle="fullScreen"
         onRequestClose={() => { Keyboard.dismiss(); setComposerExpanded(false); }}>
         <SafeAreaView style={s.editorPage}>
@@ -832,6 +878,23 @@ export default function App() {
 
 const s = StyleSheet.create({
   root: { flex: 1, backgroundColor: BG },
+  chatWorkspace: { flex: 1, minHeight: 0 },
+  settingsScroll: { flex: 1 },
+  settingsContent: { paddingBottom: 26 },
+  settingsHeading: { color: '#f4f7ff', fontSize: 18, fontWeight: '800', paddingHorizontal: 14, paddingTop: 14 },
+  settingsHint: { color: MUTED, fontSize: 11, paddingHorizontal: 14, paddingTop: 5, paddingBottom: 8 },
+  settingsExtras: { paddingHorizontal: 14, paddingTop: 15, paddingBottom: 20 },
+  chatModelBar: { minHeight: 42, backgroundColor: PANEL, paddingHorizontal: 14,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 6 },
+  chatModelLabel: { color: '#eff4ff', fontSize: 12, fontWeight: '700', flex: 1 },
+  chatModelAction: { color: ACCENT, fontSize: 11, fontWeight: '800' },
+  tabBar: { flexDirection: 'row', backgroundColor: '#151f32',
+    paddingHorizontal: 18, paddingTop: 7, paddingBottom: 7, gap: 10,
+    borderTopWidth: 1, borderTopColor: '#30405e' },
+  tabButton: { flex: 1, paddingVertical: 9, alignItems: 'center', borderRadius: 10 },
+  tabSelected: { backgroundColor: '#31466c' },
+  tabLabel: { fontSize: 13, fontWeight: '700', color: MUTED },
+  tabLabelSelected: { color: '#f0f4ff' },
   header: { paddingHorizontal: 18, paddingTop: 12, paddingBottom: 10,
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   title: { color: '#f4f7ff', fontSize: 23, fontWeight: '800', letterSpacing: 2.5 },
