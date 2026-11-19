@@ -1,4 +1,4 @@
-import React, { forwardRef, useImperativeHandle, useRef, useState } from 'react';
+import React, { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 import * as Speech from 'expo-speech';
 import WebView, { type WebViewMessageEvent } from 'react-native-webview';
@@ -60,6 +60,8 @@ export const VoiceTest = forwardRef<VoiceTestHandle, Props>(function VoiceTest(
 ) {
   const [locale, setLocale] = useState<VoiceLocale>('vi-VN');
   const [ttsEngine, setTtsEngine] = useState<TtsEngine>('system');
+  const [systemVoices, setSystemVoices] = useState<Speech.Voice[]>([]);
+  const [voiceIndex, setVoiceIndex] = useState(0);
   const [kevoiceReady, setKevoiceReady] = useState(false);
   const [kevoiceUnlocked, setKevoiceUnlocked] = useState(false);
   const [ttsModel, setTtsModel] = useState('Android/iOS system TTS');
@@ -79,6 +81,19 @@ export const VoiceTest = forwardRef<VoiceTestHandle, Props>(function VoiceTest(
   const bridgeRun = useRef<BridgeRun | null>(null);
   const onTranscriptRef = useRef(onTranscript);
   onTranscriptRef.current = onTranscript;
+  const matchedVoices = systemVoices.filter(v =>
+    v.language.toLowerCase().startsWith(locale.slice(0, 2).toLowerCase()));
+  const systemVoice = matchedVoices.length
+    ? matchedVoices[voiceIndex % matchedVoices.length] : undefined;
+  const systemVoiceLabel = systemVoice
+    ? systemVoice.name + ' · ' + systemVoice.language : 'Giọng mặc định ' + locale;
+  useEffect(() => {
+    let active = true;
+    void Speech.getAvailableVoicesAsync()
+      .then(rows => { if (active) setSystemVoices(rows); })
+      .catch(() => {});
+    return () => { active = false; };
+  }, []);
 
   useSpeechRecognitionEvent('start', () => setListening(true));
   useSpeechRecognitionEvent('result', event => {
@@ -122,6 +137,10 @@ export const VoiceTest = forwardRef<VoiceTestHandle, Props>(function VoiceTest(
     if (!ready || generating || listening || micRef.current) return;
     try {
       speechRun.current += 1;
+      if (bridgeRun.current) {
+        sendToBridge({ type: 'stop', requestId: bridgeRun.current.id });
+        bridgeRun.current = null;
+      }
       await Speech.stop();
       setSpeaking(false);
       if (!ExpoSpeechRecognitionModule.isRecognitionAvailable()) {
@@ -312,7 +331,7 @@ export const VoiceTest = forwardRef<VoiceTestHandle, Props>(function VoiceTest(
     }
     const speechText = spoken.slice(0, Math.min(3000, Speech.maxSpeechInputLength));
     const run = ++speechRun.current;
-    setTtsModel('Android/iOS system · ' + (request?.locale ?? locale));
+    setTtsModel('System TTS · ' + systemVoiceLabel);
     setSynthesisMs(null);
     setModelLoadMs(null);
     setRtf(null);
@@ -324,6 +343,7 @@ export const VoiceTest = forwardRef<VoiceTestHandle, Props>(function VoiceTest(
       try {
         Speech.speak(speechText, {
           language: request?.locale ?? locale,
+          ...(systemVoice ? { voice: systemVoice.identifier } : {}),
           rate: 1,
           onStart: () => {
             if (run !== speechRun.current) return;
@@ -333,7 +353,7 @@ export const VoiceTest = forwardRef<VoiceTestHandle, Props>(function VoiceTest(
             const startMs = beganAt - requestedAt;
             setTtsStartMs(startMs);
             const patch: Partial<VoiceTimingUpdate> = {
-              voiceTtsEngine: 'system', voiceTtsModelId: 'OS TTS ' + (request?.locale ?? locale),
+              voiceTtsEngine: 'system', voiceTtsModelId: systemVoiceLabel,
               voiceTtsStartMs: startMs,
             };
             if (request) {
@@ -350,7 +370,7 @@ export const VoiceTest = forwardRef<VoiceTestHandle, Props>(function VoiceTest(
             const duration = beganAt === null ? null : Date.now() - beganAt;
             setTtsDurationMs(duration);
             onTiming?.({
-              voiceTtsEngine: 'system', voiceTtsModelId: 'OS TTS ' + (request?.locale ?? locale),
+              voiceTtsEngine: 'system', voiceTtsModelId: systemVoiceLabel,
               ...(duration !== null ? { voiceTtsDurationMs: duration } : {}),
               voiceTtsStatus: 'completed',
             });
@@ -399,7 +419,10 @@ export const VoiceTest = forwardRef<VoiceTestHandle, Props>(function VoiceTest(
           style={[styles.button, (generating || (!listening && !ready)) && styles.disabled]}>
           <Text style={styles.buttonText}>{listening ? '■ Chốt Mic' : '🎙 Voice Test'}</Text>
         </Pressable>
-        <Pressable accessibilityRole="button" onPress={() => setLocale(locale === 'vi-VN' ? 'en-US' : 'vi-VN')}
+        <Pressable accessibilityRole="button" onPress={() => {
+            setLocale(locale === 'vi-VN' ? 'en-US' : 'vi-VN');
+            setVoiceIndex(0);
+          }}
           disabled={listening || generating} style={styles.locale}>
           <Text style={styles.localeText}>{locale} ⇄</Text>
         </Pressable>
@@ -409,6 +432,15 @@ export const VoiceTest = forwardRef<VoiceTestHandle, Props>(function VoiceTest(
           </Pressable>
         )}
       </View>
+      {ttsEngine === 'system' && (
+        <Pressable accessibilityRole="button" disabled={speaking || generating}
+          onPress={() => setVoiceIndex(v => v + 1)} style={styles.voicePicker}>
+          <Text style={styles.voicePickerText}>
+            Giọng hệ thống: {systemVoiceLabel}
+            {matchedVoices.length > 1 ? ' · Đổi (' + matchedVoices.length + ')' : ''}
+          </Text>
+        </Pressable>
+      )}
       {ttsEngine === 'kevoice' && (
         <View style={styles.webBox}>
           <WebView
@@ -463,6 +495,9 @@ const styles = StyleSheet.create({
   engineActive: { backgroundColor: '#5269a8' },
   engineLabel: { color: FG, fontSize: 11, fontWeight: '700' },
   webBox: { backgroundColor: BG, borderRadius: 8, overflow: 'hidden', marginVertical: 5 },
+  voicePicker: { paddingVertical: 5, paddingHorizontal: 7,
+    borderRadius: 8, backgroundColor: '#25354d' },
+  voicePickerText: { color: FG, fontSize: 10 },
   webview: { height: 104, backgroundColor: BG },
   bridgeState: { color: MUTED, fontSize: 10, padding: 4 },
   button: { backgroundColor: '#8faaff', paddingHorizontal: 11, paddingVertical: 9, borderRadius: 9 },
