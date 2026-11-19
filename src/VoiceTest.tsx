@@ -79,6 +79,7 @@ export const VoiceTest = forwardRef<VoiceTestHandle, Props>(function VoiceTest(
   const offlineRecorder = useRef<OfflineSttRecorder | null>(null);
   const offlineSpeaker = useRef(new OfflineTtsPlayer());
   const offlineMicStarted = useRef(0);
+  const recordingEpoch = useRef(0);
   const speechRun = useRef(0);
   const watchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onTranscriptRef = useRef(onTranscript);
@@ -108,6 +109,7 @@ export const VoiceTest = forwardRef<VoiceTestHandle, Props>(function VoiceTest(
       .catch(() => setStatus('Không đọc được danh sách voice pack. Đang dùng giọng mặc định.'));
     return () => {
       active = false;
+      recordingEpoch.current += 1;
       void offlineRecorder.current?.close();
       void offlineSpeaker.current.stop();
     };
@@ -194,11 +196,18 @@ export const VoiceTest = forwardRef<VoiceTestHandle, Props>(function VoiceTest(
     setSttBusy(true);
     setStatus('Đang mở microphone PCM offline...');
     try {
-      await Speech.stop();
+      // Prevent speaker audio being recorded as the next user's speech.
+      speechRun.current += 1;
+      await Promise.all([Speech.stop(), offlineSpeaker.current.stop()]);
       setSpeaking(false);
+      const epoch = ++recordingEpoch.current;
       const recorder = new OfflineSttRecorder();
       offlineRecorder.current = recorder;
       await recorder.start();
+      if (epoch !== recordingEpoch.current) {
+        await recorder.close();
+        return;
+      }
       offlineMicStarted.current = Date.now();
       setListening(true);
       setStatus('Đang ghi âm trực tiếp 16 kHz · nhấn Chốt Mic (tối đa 24 giây).');
@@ -218,8 +227,10 @@ export const VoiceTest = forwardRef<VoiceTestHandle, Props>(function VoiceTest(
     setSttBusy(true);
     setStatus('Whisper đang nhận dạng tiếng Việt / English trên thiết bị...');
     const startAt = offlineMicStarted.current;
+    const epoch = recordingEpoch.current;
     try {
       const result = await recorder.stopAndTranscribe(locale === 'vi-VN' ? 'vi' : 'en');
+      if (epoch !== recordingEpoch.current) return;
       if (!result.text) {
         setStatus('Whisper chưa nhận được câu rõ ràng; thử nói sát mic hơn.');
         return;
@@ -290,13 +301,21 @@ export const VoiceTest = forwardRef<VoiceTestHandle, Props>(function VoiceTest(
   }
 
   function stopVoice() {
+    recordingEpoch.current += 1;
     speechRun.current += 1;
     if (watchdogRef.current !== null) clearTimeout(watchdogRef.current);
     watchdogRef.current = null;
+    micRef.current = null;
+    if (offlineRecorder.current) {
+      void offlineRecorder.current.close();
+      offlineRecorder.current = null;
+    }
+    try { ExpoSpeechRecognitionModule.abort(); } catch { /* no active OS recognizer */ }
     void Speech.stop();
     void offlineSpeaker.current.stop();
+    setListening(false);
     setSpeaking(false);
-    setStatus('Đã dừng đọc.');
+    setStatus('Đã dừng mic / giọng đọc.');
   }
 
   function speak(
