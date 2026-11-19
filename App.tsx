@@ -225,7 +225,6 @@ export default function App() {
             ...next.slice(-8).map(m => ({ role: m.role, content: m.text })),
           ],
           n_predict: 160,
-          n_ctx: undefined,
           temperature: 0.7,
           top_p: 0.8,
           top_k: 20,
