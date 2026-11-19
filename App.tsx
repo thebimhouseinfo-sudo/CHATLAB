@@ -405,6 +405,10 @@ function ChatLabScreen() {
       ...(speechRequest ? {
         voiceLocale: speechRequest.locale,
         voiceSttMs: speechRequest.sttMs,
+        voiceSttEngine: speechRequest.engine,
+        voiceSttDecodeMs: speechRequest.sttDecodeMs,
+        voiceSttAudioMs: speechRequest.sttAudioMs,
+        voiceSttModelLoadMs: speechRequest.sttModelLoadMs,
       } : {}),
     };
 
