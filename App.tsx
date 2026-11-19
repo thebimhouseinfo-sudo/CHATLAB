@@ -1,10 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator, Alert, FlatList, KeyboardAvoidingView, Keyboard, Modal, Platform,
-  Pressable, SafeAreaView, ScrollView, Share, StyleSheet,
+  Pressable, ScrollView, Share, StyleSheet,
   Text, TextInput, View,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
+import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import * as Device from 'expo-device';
 import { initLlama, type LlamaContext } from 'llama.rn';
 import { MODELS, type ModelId, type ModelSpec } from './src/models';
@@ -69,6 +70,14 @@ function Action({
 }
 
 export default function App() {
+  return (
+    <SafeAreaProvider>
+      <ChatLabScreen />
+    </SafeAreaProvider>
+  );
+}
+
+function ChatLabScreen() {
   const [selectedId, setSelectedId] = useState<ModelId>('qwen08-q4');
   const selected = MODELS.find(m => m.id === selectedId)!;
   const [ready, setReady] = useState<Partial<Record<ModelId, boolean>>>({});
@@ -595,7 +604,7 @@ export default function App() {
   const usage = promptTokens === null ? null : Math.round(promptTokens / contextWindow * 100);
 
   return (
-    <SafeAreaView style={s.root}>
+    <SafeAreaView edges={['top','right','bottom','left']} style={s.root}>
       <StatusBar style="light" />
       <View style={s.header}>
         <View>
@@ -859,7 +868,8 @@ export default function App() {
       </View>
       <Modal visible={composerExpanded} animationType="slide" presentationStyle="fullScreen"
         onRequestClose={() => { Keyboard.dismiss(); setComposerExpanded(false); }}>
-        <SafeAreaView style={s.editorPage}>
+        <SafeAreaProvider>
+        <SafeAreaView edges={['top','right','bottom','left']} style={s.editorPage}>
           <View style={s.editorHeader}>
             <View style={{ flex: 1 }}>
               <Text style={s.editorTitle}>Soạn / sửa tin nhắn</Text>
@@ -883,6 +893,7 @@ export default function App() {
             </View>
           </KeyboardAvoidingView>
         </SafeAreaView>
+        </SafeAreaProvider>
       </Modal>
     </SafeAreaView>
   );
