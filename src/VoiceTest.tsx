@@ -56,6 +56,7 @@ export const VoiceTest = forwardRef<VoiceTestHandle, Props>(function VoiceTest(
   const [roundtripMs, setRoundtripMs] = useState<number | null>(null);
   const [ttsDurationMs, setTtsDurationMs] = useState<number | null>(null);
   const [speechError, setSpeechError] = useState('');
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const [sttServices, setSttServices] = useState<string[]>([]);
   const micRef = useRef<MicRun | null>(null);
   const speechRun = useRef(0);
@@ -307,32 +308,36 @@ export const VoiceTest = forwardRef<VoiceTestHandle, Props>(function VoiceTest(
           disabled={generating} onPress={() => speak('Xin chào. Đây là thử nghiệm giọng tiếng Việt.')}>
           <Text style={styles.audioTestLabel}>🔊 Thử loa VI</Text>
         </Pressable>
-        <Pressable accessibilityRole="button" style={styles.audioTestButton}
+        {detailsOpen && <Pressable accessibilityRole="button" style={styles.audioTestButton}
           disabled={generating} onPress={() => speak('Hello. This is the English voice test.', undefined, undefined, true)}>
           <Text style={styles.audioTestLabel}>🔊 Thử loa EN</Text>
+        </Pressable>}
+        <Pressable accessibilityRole="button" style={styles.audioTestButton}
+          onPress={() => setDetailsOpen(!detailsOpen)}>
+          <Text style={styles.audioTestLabel}>{detailsOpen ? '▲ Ẩn chi tiết' : '⚙ Giọng / lỗi'}</Text>
         </Pressable>
         {(speaking || status.includes('Đang khởi động')) &&
           <Pressable accessibilityRole="button" style={styles.audioTestButton} onPress={stopVoice}>
             <Text style={styles.audioTestLabel}>■ Dừng</Text>
           </Pressable>}
       </View>
-      <Pressable accessibilityRole="button" style={styles.voicePicker}
+      {detailsOpen && <Pressable accessibilityRole="button" style={styles.voicePicker}
         disabled={speaking || generating} onPress={() => setVoiceIndex(i => i + 1)}>
         <Text style={styles.voicePickerText}>Giọng hệ thống: {voiceLabel} ({locale})
           {available.length > 1 ? ' · Nhấn để đổi (' + available.length + ')' : ''}
         </Text>
-      </Pressable>
+      </Pressable>}
       <Text style={styles.status} numberOfLines={2}>{status}</Text>
-      <Text style={styles.metrics}>
+      {detailsOpen && <Text style={styles.metrics}>
         Mic → chữ: {fmt(sttMs)} · TTS start: {fmt(ttsStartMs)} ·
         {' '}Mic → TTS: {fmt(roundtripMs)} · Đọc: {fmt(ttsDurationMs)}
-      </Text>
-      {!!speechError && <Text style={styles.errorText}>{speechError}</Text>}
-      <Text style={styles.note}>
+      </Text>}
+      {detailsOpen && !!speechError && <Text style={styles.errorText}>{speechError}</Text>}
+      {detailsOpen && <Text style={styles.note}>
         STT services: {sttServices.length ? sttServices.join(', ') : 'không tìm thấy qua API'}.
         Đây là APK native: STT/TTS qua hệ thống; Qwen local.
         Thời gian Mic → chữ gồm cả lúc nói; TTS start đo callback, không phải mẫu âm thanh đầu tiên.
-      </Text>
+      </Text>}
     </View>
   );
 });
