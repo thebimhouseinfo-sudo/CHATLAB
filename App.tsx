@@ -93,7 +93,7 @@ function ChatLabScreen() {
   const [modelsOpen, setModelsOpen] = useState(true);
   const [activeTab, setActiveTab] = useState<'chat' | 'settings'>('chat');
   const [benchExpanded, setBenchExpanded] = useState(false);
-  const [autoSendVoice, setAutoSendVoice] = useState(false);
+  const [chatMode, setChatMode] = useState<'text' | 'voice'>('text');
   const [historyOpen, setHistoryOpen] = useState(false);
   const [activeChatId, setActiveChatId] = useState(idFor);
   const [chatModelId, setChatModelId] = useState<ModelId>('qwen08-q4');
@@ -748,17 +748,6 @@ function ChatLabScreen() {
         {!!pushStatus && <Text style={s.cloudStatus}>{pushStatus}</Text>}
       </View>
           <View style={s.settingsExtras}>
-            <Text style={s.sectionTitle}>VOICE TEST</Text>
-            <Pressable accessibilityRole="checkbox"
-              accessibilityState={{ checked: autoSendVoice }}
-              onPress={() => setAutoSendVoice(!autoSendVoice)}
-              style={s.voicePreference}>
-              <Text style={s.voicePreferenceCheck}>{autoSendVoice ? '☑' : '☐'}</Text>
-              <View style={{flex: 1}}>
-                <Text style={s.voicePreferenceTitle}>Tự gửi sau khi nhận giọng nói</Text>
-                <Text style={s.small}>Mặc định tắt: mở trình soạn để sửa STT tiếng Việt xen English.</Text>
-              </View>
-            </Pressable>
             <Text style={s.sectionTitle}>BENCHMARK DATA</Text>
             <View style={s.actionRow}>
               <Action title={'Export CSV (' + benchmarks.length + ')'}
@@ -777,6 +766,18 @@ function ChatLabScreen() {
             </Text>
             <Text style={s.chatModelAction}>⇄ Model / CTX</Text>
           </Pressable>
+          <View style={s.modeSwitch}>
+            <Pressable accessibilityRole="button" accessibilityState={{ selected: chatMode === 'text' }}
+              style={[s.modeItem, chatMode === 'text' && s.modeActive]}
+              onPress={() => { voiceRef.current?.stop(); setChatMode('text'); }}>
+              <Text style={s.modeText}>⌨ Text Chat</Text>
+            </Pressable>
+            <Pressable accessibilityRole="button" accessibilityState={{ selected: chatMode === 'voice' }}
+              style={[s.modeItem, chatMode === 'voice' && s.modeActive]}
+              onPress={() => { Keyboard.dismiss(); setComposerExpanded(false); setChatMode('voice'); }}>
+              <Text style={s.modeText}>🎙 Voice Chat</Text>
+            </Pressable>
+          </View>
       <View style={s.metricsPanel}>
         <View style={s.contextInfo}>
           <Text style={s.small}>CHAT #{turns} lượt · CTX {loadedWindow ? loadedWindow / 1024 + 'K' : '—'}
@@ -831,7 +832,8 @@ function ChatLabScreen() {
           </View>
         )}
       />
-      <VoiceTest ref={voiceRef} ready={chatReady} generating={generating} autoSend={autoSendVoice}
+      <VoiceTest ref={voiceRef} ready={chatReady} generating={generating}
+        mode={chatMode} autoSend={chatMode === 'voice'}
         onTranscript={(text, request, autoSend) => {
           setInput(text);
           setDraftVoiceRequest(request);
@@ -841,7 +843,7 @@ function ChatLabScreen() {
             setComposerExpanded(true);
           }
         }} />
-      <View style={s.composer}>
+      {chatMode === 'text' && <View style={s.composer}>
         <Pressable accessibilityRole="button" onPress={() => setComposerExpanded(true)}
           disabled={generating || !chatReady} style={s.composerPreview}>
           <Text style={[s.inputPreview, !input && s.inputHint]} numberOfLines={2}>
@@ -853,8 +855,8 @@ function ChatLabScreen() {
           ? <Action title="■ Dừng" onPress={() => void stop()} />
           : <Action title="Gửi" onPress={() => void send()}
               disabled={!input.trim() || !chatReady} />}
-      </View>
-      <Text style={s.footer}>Giữ bản nháp khi sửa · Context {contextWindow / 1024}K · tối đa {MAX_PREDICT} tokens/lượt</Text>
+      </View>}
+      {chatMode === 'text' && <Text style={s.footer}>Giữ bản nháp khi sửa · Context {contextWindow / 1024}K · tối đa {MAX_PREDICT} tokens/lượt</Text>}
         </View>
       )}
       <View style={s.tabBar}>
@@ -919,6 +921,12 @@ const s = StyleSheet.create({
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 6 },
   chatModelLabel: { color: '#eff4ff', fontSize: 12, fontWeight: '700', flex: 1 },
   chatModelAction: { color: ACCENT, fontSize: 11, fontWeight: '800' },
+  modeSwitch: { flexDirection: 'row', gap: 9, paddingHorizontal: 12, paddingVertical: 7,
+    backgroundColor: '#141f34', borderBottomColor: '#304362', borderBottomWidth: 1 },
+  modeItem: { flex: 1, borderRadius: 10, paddingVertical: 9,
+    alignItems: 'center', backgroundColor: '#273650' },
+  modeActive: { backgroundColor: '#536cae' },
+  modeText: { color: '#f5f7ff', fontWeight: '800', fontSize: 12 },
   tabBar: { flexDirection: 'row', backgroundColor: '#151f32',
     paddingHorizontal: 18, paddingTop: 7, paddingBottom: 7, gap: 10,
     borderTopWidth: 1, borderTopColor: '#30405e' },
