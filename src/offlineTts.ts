@@ -1,7 +1,7 @@
 import {
   ModelCategory, ensureModel, isModelDownloaded, refreshModels,
 } from 'react-native-sherpa-onnx/download';
-import { createTTS, type TtsEngine } from 'react-native-sherpa-onnx/tts';
+import { createStreamingTTS, type StreamingTtsEngine } from 'react-native-sherpa-onnx/tts';
 
 // Separate Vietnamese ONNX VITS model. This is NOT the browser MMS checkpoint from KEVoice.
 // The WAV/PCM remains in the native app; no remote WebView or TTS API.
@@ -33,7 +33,7 @@ export type OfflineTtsResult = {
 };
 
 export class OfflineTtsPlayer {
-  private engine: TtsEngine | null = null;
+  private engine: StreamingTtsEngine | null = null;
   private token = 0;
 
   async speak(text: string, onPlaybackStart?: () => void): Promise<OfflineTtsResult> {
@@ -43,43 +43,67 @@ export class OfflineTtsPlayer {
     const started = Date.now();
     const installed = await ensureModel(ModelCategory.Tts, OFFLINE_TTS_MODEL);
     const loadStart = Date.now();
-    const engine = await createTTS({
+    const engine = await createStreamingTTS({
       modelPath: { type: 'file', path: installed.localPath },
-      modelType: 'vits',
-      numThreads: 2,
+      modelType: 'vits', numThreads: 2,
     });
     this.engine = engine;
     const loadMs = Date.now() - loadStart;
+    let audioSamples = 0;
+    let firstPlaybackMs: number | null = null;
+    let writeQueue: Promise<void> = Promise.resolve();
     try {
+      const sampleRate = await engine.getSampleRate();
+      if (!sampleRate) throw new Error('Piper không trả sample rate.');
+      await engine.startPcmPlayer(sampleRate, 1);
       const synthStart = Date.now();
-      const audio = await engine.generateSpeech(text.slice(0, MAX_SPOKEN_CHARS), { sid: 0 });
-      const synthesisMs = Date.now() - synthStart;
-      if (run !== this.token) throw new Error('Đã dừng TTS.');
-      if (!audio.samples.length || !audio.sampleRate) throw new Error('TTS không tạo được mẫu âm thanh.');
-      const durationMs = Math.round(audio.samples.length / audio.sampleRate * 1000);
-      await engine.startPcmPlayer(audio.sampleRate, 1);
-      if (run !== this.token) throw new Error('Đã dừng TTS.');
-      // Player queues PCM natively; this is a timestamp proxy, not physical speaker measurement.
-      onPlaybackStart?.();
-      const timeAtPlayback = Date.now() - started;
-      const chunkSize = 12000;
-      for (let i = 0; i < audio.samples.length; i += chunkSize) {
-        if (run !== this.token) throw new Error('Đã dừng TTS.');
-        await engine.writePcmChunk(audio.samples.slice(i, i + chunkSize));
+      let settleDone!: () => void;
+      let settleError!: (error: Error) => void;
+      const done = new Promise<void>((resolve, reject) => {
+        settleDone = resolve;
+        settleError = reject;
+      });
+      const timeout = setTimeout(() => {
+        settleError(new Error('Piper native quá 45 giây chưa kết thúc synthesis.'));
+        void engine.cancelSpeechStream();
+      }, 45000);
+      try {
+        await engine.generateSpeechStream(text.slice(0, MAX_SPOKEN_CHARS), { sid: 0 }, {
+          onChunk: chunk => {
+            if (run !== this.token || !chunk.samples.length) return;
+            audioSamples += chunk.samples.length;
+            if (firstPlaybackMs === null) {
+              firstPlaybackMs = Date.now() - started;
+              onPlaybackStart?.(); // native enqueue proxy, not first hardware PCM
+            }
+            writeQueue = writeQueue.then(() => engine.writePcmChunk(chunk.samples));
+            // Rejections are forwarded after generator completes.
+          },
+          onEnd: () => settleDone(),
+          onError: e => settleError(new Error(e.message ?? 'Piper streaming error')),
+        });
+        await done;
+        await writeQueue;
+      } finally {
+        clearTimeout(timeout);
       }
-      // The API has no playback-complete callback. Leave time for native audio output.
-      const deadline = Date.now() + Math.min(durationMs + 300, 45000);
-      while (Date.now() < deadline && run === this.token) {
+      if (run !== this.token) throw new Error('Đã dừng TTS.');
+      if (!audioSamples) throw new Error('Piper trả về 0 mẫu âm thanh.');
+      const synthesisMs = Date.now() - synthStart;
+      const audioDurationMs = Math.round(audioSamples / sampleRate * 1000);
+      // Native player has no end callback; let buffered audio drain before stopping it.
+      const waitedUntil = Date.now() + Math.min(audioDurationMs + 200, 30000);
+      while (Date.now() < waitedUntil && run === this.token) {
         await new Promise(resolve => setTimeout(resolve, 120));
       }
       if (run !== this.token) throw new Error('Đã dừng TTS.');
       return {
-        loadMs, synthesisMs, toPlaybackMs: timeAtPlayback,
-        audioDurationMs: durationMs, elapsedMs: Date.now() - started,
-        realTimeFactor: durationMs ? synthesisMs / durationMs : 0,
+        loadMs, synthesisMs, toPlaybackMs: firstPlaybackMs ?? synthesisMs,
+        audioDurationMs, elapsedMs: Date.now() - started,
+        realTimeFactor: audioDurationMs ? synthesisMs / audioDurationMs : 0,
       };
     } finally {
-      try { await engine.stopPcmPlayer(); } catch { /* player may never have started */ }
+      try { await engine.stopPcmPlayer(); } catch { /* player may not be started */ }
       await engine.destroy();
       if (this.engine === engine) this.engine = null;
     }
@@ -88,6 +112,7 @@ export class OfflineTtsPlayer {
   async stop(): Promise<void> {
     this.token += 1;
     const current = this.engine;
+    try { await current?.cancelSpeechStream(); } catch { /* no stream */ }
     try { await current?.stopPcmPlayer(); } catch { /* already finished */ }
   }
 }
