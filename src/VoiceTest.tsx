@@ -7,6 +7,7 @@ import {
 } from 'expo-speech-recognition';
 import type { VoiceTimingUpdate } from './bench';
 import { OFFLINE_STT_MODEL, OfflineSttRecorder, installOfflineStt, offlineSttReady } from './offlineStt';
+import { OFFLINE_TTS_MODEL, OfflineTtsPlayer, installOfflineTts, offlineTtsReady } from './offlineTts';
 
 export type VoiceLocale = 'vi-VN' | 'en-US';
 export type VoiceRequest = {
@@ -56,6 +57,10 @@ export const VoiceTest = forwardRef<VoiceTestHandle, Props>(function VoiceTest(
   const [installingStt, setInstallingStt] = useState(false);
   const [sttInstallStatus, setSttInstallStatus] = useState('');
   const [sttBusy, setSttBusy] = useState(false);
+  const [ttsEngine, setTtsEngine] = useState<'system' | 'offline'>('system');
+  const [ttsInstalled, setTtsInstalled] = useState(false);
+  const [installingTts, setInstallingTts] = useState(false);
+  const [ttsInstallStatus, setTtsInstallStatus] = useState('');
   const [systemVoices, setSystemVoices] = useState<Speech.Voice[]>([]);
   const [voiceIndex, setVoiceIndex] = useState(0);
   const [listening, setListening] = useState(false);
@@ -70,6 +75,7 @@ export const VoiceTest = forwardRef<VoiceTestHandle, Props>(function VoiceTest(
   const [sttServices, setSttServices] = useState<string[]>([]);
   const micRef = useRef<MicRun | null>(null);
   const offlineRecorder = useRef<OfflineSttRecorder | null>(null);
+  const offlineSpeaker = useRef(new OfflineTtsPlayer());
   const offlineMicStarted = useRef(0);
   const speechRun = useRef(0);
   const watchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -92,12 +98,16 @@ export const VoiceTest = forwardRef<VoiceTestHandle, Props>(function VoiceTest(
     void offlineSttReady()
       .then(installed => { if (active) setSttInstalled(installed); })
       .catch(() => {});
+    void offlineTtsReady()
+      .then(installed => { if (active) setTtsInstalled(installed); })
+      .catch(() => {});
     void Speech.getAvailableVoicesAsync()
       .then(voices => { if (active) setSystemVoices(voices); })
       .catch(() => setStatus('Không đọc được danh sách voice pack. Đang dùng giọng mặc định.'));
     return () => {
       active = false;
       void offlineRecorder.current?.close();
+      void offlineSpeaker.current.stop();
     };
   }, []);
 
@@ -139,6 +149,23 @@ export const VoiceTest = forwardRef<VoiceTestHandle, Props>(function VoiceTest(
       engine: 'system',
     }, autoSend);
   });
+
+  async function installTtsModel() {
+    if (installingTts || speaking || generating) return;
+    setInstallingTts(true);
+    setTtsInstallStatus('Đang lấy model Piper tiếng Việt...');
+    try {
+      await installOfflineTts((phase, percent) =>
+        setTtsInstallStatus(phase + (percent == null ? '' : ' ' + Math.round(percent) + '%')));
+      setTtsInstalled(true);
+      setTtsEngine('offline');
+      setTtsInstallStatus('Piper tiếng Việt sẵn sàng. Nhấn Thử loa VI.');
+    } catch (error) {
+      setTtsInstallStatus('TTS offline lỗi tải: ' + (error instanceof Error ? error.message : String(error)));
+    } finally {
+      setInstallingTts(false);
+    }
+  }
 
   async function installModel() {
     if (installingStt || listening || generating) return;
@@ -265,6 +292,7 @@ export const VoiceTest = forwardRef<VoiceTestHandle, Props>(function VoiceTest(
     if (watchdogRef.current !== null) clearTimeout(watchdogRef.current);
     watchdogRef.current = null;
     void Speech.stop();
+    void offlineSpeaker.current.stop();
     setSpeaking(false);
     setStatus('Đã dừng đọc.');
   }
@@ -281,6 +309,60 @@ export const VoiceTest = forwardRef<VoiceTestHandle, Props>(function VoiceTest(
       .trim();
     if (!spoken) {
       setStatus('Không có chữ để TTS đọc.');
+      return;
+    }
+    if (ttsEngine === 'offline' && !testDefaultEnglish) {
+      if ((request?.locale ?? locale) === 'en-US') {
+        setStatus('Piper hiện là model tiếng Việt; chuyển TTS hệ thống để nghe tiếng Anh.');
+        return;
+      }
+      if (!ttsInstalled) {
+        setStatus('Hãy tải Piper VI (~22 MB) trước khi chọn TTS offline.');
+        return;
+      }
+      if (watchdogRef.current !== null) clearTimeout(watchdogRef.current);
+      const run = ++speechRun.current;
+      const startedAt = Date.now();
+      setSpeechError('');
+      setStatus('Piper native đang tạo âm thanh...');
+      void offlineSpeaker.current.speak(spoken, () => {
+        if (run !== speechRun.current) return;
+        setSpeaking(true);
+        const startupMs = Date.now() - startedAt;
+        setTtsStartMs(startupMs);
+        setStatus('Piper đang phát âm thanh qua PCM native...');
+        const patch: Partial<VoiceTimingUpdate> = {
+          voiceTtsEngine: 'kevoice',
+          voiceTtsModelId: OFFLINE_TTS_MODEL,
+          voiceTtsStartMs: startupMs,
+        };
+        if (request) {
+          const roundtripMs = Date.now() - request.startedAt;
+          setRoundtripMs(roundtripMs);
+          patch.voiceRoundtripToSpeechMs = roundtripMs;
+        }
+        onTiming?.(patch);
+      }).then(result => {
+        if (run !== speechRun.current) return;
+        setSpeaking(false);
+        setTtsDurationMs(result.audioDurationMs);
+        setStatus('Piper hoàn tất · sinh ' + Math.round(result.synthesisMs) +
+          ' ms · RTF ' + result.realTimeFactor.toFixed(2));
+        onTiming?.({
+          voiceTtsEngine: 'kevoice', voiceTtsModelId: OFFLINE_TTS_MODEL,
+          voiceTtsModelLoadMs: result.loadMs, voiceTtsSynthesisMs: result.synthesisMs,
+          voiceTtsAudioDurationMs: result.audioDurationMs,
+          voiceTtsRealTimeFactor: result.realTimeFactor,
+          voiceTtsDurationMs: result.audioDurationMs, voiceTtsStatus: 'completed',
+        });
+      }).catch(error => {
+        if (run !== speechRun.current) return;
+        setSpeaking(false);
+        const msg = error instanceof Error ? error.message : String(error);
+        setSpeechError(msg);
+        setStatus('Piper TTS lỗi: ' + msg.slice(0, 160));
+        onTiming?.({ voiceTtsStatus: 'error' });
+      });
       return;
     }
     const speechText = spoken.slice(0, Math.min(3000, Speech.maxSpeechInputLength));
@@ -403,6 +485,18 @@ export const VoiceTest = forwardRef<VoiceTestHandle, Props>(function VoiceTest(
         )}
       </View>
       <View style={styles.audioTests}>
+        <Pressable accessibilityRole="button" style={styles.audioTestButton}
+          disabled={speaking || installingTts} onPress={() => {
+            setTtsEngine(x => x === 'offline' ? 'system' : 'offline');
+            setStatus('TTS engine đã chuyển. Nhấn Thử loa VI.');
+          }}>
+          <Text style={styles.audioTestLabel}>TTS: {ttsEngine === 'offline' ? 'Piper AI' : 'Hệ thống'} ⇄</Text>
+        </Pressable>
+        {ttsEngine === 'offline' && !ttsInstalled &&
+          <Pressable accessibilityRole="button" style={styles.audioTestButton}
+            disabled={installingTts} onPress={() => void installTtsModel()}>
+            <Text style={styles.audioTestLabel}>{installingTts ? 'Đang tải TTS...' : '↓ Tải Piper VI (~22 MB)'}</Text>
+          </Pressable>}
         {!sttInstalled && <Pressable accessibilityRole="button"
           disabled={installingStt || generating} style={styles.audioTestButton}
           onPress={() => void installModel()}>
@@ -440,6 +534,7 @@ export const VoiceTest = forwardRef<VoiceTestHandle, Props>(function VoiceTest(
         </Text>
       </Pressable>}
       {!!sttInstallStatus && <Text style={styles.status}>{sttInstallStatus}</Text>}
+      {!!ttsInstallStatus && <Text style={styles.status}>{ttsInstallStatus}</Text>}
       <Text style={styles.status} numberOfLines={3}>{status}</Text>
       {detailsOpen && <Text style={styles.metrics}>
         Mic → chữ: {fmt(sttMs)} · TTS start: {fmt(ttsStartMs)} ·
