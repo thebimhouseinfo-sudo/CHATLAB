@@ -11,6 +11,10 @@ import { MODELS, type ModelId, type ModelSpec } from './src/models';
 import { downloadModel, isModelReady, modelPath, removeModel } from './src/modelStore';
 import { appendBenchmark, csvBenchmark, readBenchmarks, type Benchmark } from './src/bench';
 import { readChatSessions, writeChatSessions, type ChatMessage, type ChatSession } from './src/chatStore';
+import {
+  buildCloudReport, clearCloudConfig, getInstallationId, pushCloudReport,
+  readCloudConfig, saveCloudConfig,
+} from './src/cloudReport';
 
 type Message = ChatMessage;
 type ContextSize = 2048 | 4096 | 8192;
@@ -82,6 +86,13 @@ export default function App() {
   const [chatModelId, setChatModelId] = useState<ModelId>('qwen08-q4');
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [storageWarning, setStorageWarning] = useState('');
+  const [cloudConfigured, setCloudConfigured] = useState(false);
+  const [cloudSettingsOpen, setCloudSettingsOpen] = useState(false);
+  const [cloudEndpoint, setCloudEndpoint] = useState('');
+  const [cloudKey, setCloudKey] = useState('');
+  const [includeTranscript, setIncludeTranscript] = useState(false);
+  const [pushingReport, setPushingReport] = useState(false);
+  const [pushStatus, setPushStatus] = useState('');
   const [loadMs, setLoadMs] = useState(0);
   const [busy, setBusy] = useState(false);
   const [generating, setGenerating] = useState(false);
@@ -102,6 +113,10 @@ export default function App() {
   useEffect(() => {
     void refreshModels();
     void readBenchmarks().then(setBenchmarks);
+    void readCloudConfig().then(config => {
+      setCloudConfigured(!!config);
+      setCloudEndpoint(config?.endpoint ?? '');
+    }).catch(() => setCloudConfigured(false));
     void readChatSessions().then(rows => {
       const valid = rows.filter(row => MODELS.some(m => m.id === row.modelId));
       sessionsRef.current = valid;
@@ -154,6 +169,7 @@ export default function App() {
     setPeakPromptTokens(0);
     setContextTruncated(false);
     setHistoryOpen(false);
+    setPushStatus('');
   }
 
   function openChat(session: ChatSession) {
@@ -170,6 +186,7 @@ export default function App() {
     setPeakPromptTokens(0);
     setContextTruncated(false);
     setHistoryOpen(false);
+    setPushStatus('');
   }
 
   async function refreshModels() {
@@ -457,6 +474,84 @@ export default function App() {
     await Share.share({ message: data, title: 'CHATLAB native benchmark CSV' });
   }
 
+  async function saveCloudSettings() {
+    try {
+      if (!cloudKey.trim()) {
+        Alert.alert('Thiếu access key', 'Nhập key được cấp cho CHATLAB report endpoint.');
+        return;
+      }
+      await saveCloudConfig(cloudEndpoint, cloudKey);
+      setCloudKey('');
+      setCloudConfigured(true);
+      setCloudSettingsOpen(false);
+      setPushStatus('Cloud đã cấu hình. Chưa gửi báo cáo.');
+    } catch (error) {
+      Alert.alert('Không lưu được Cloud', errorText(error));
+    }
+  }
+
+  async function disconnectCloud() {
+    try {
+      await clearCloudConfig();
+      setCloudConfigured(false);
+      setCloudEndpoint('');
+      setCloudKey('');
+      setPushStatus('Đã ngắt kết nối cloud; các báo cáo đã gửi không tự bị xóa.');
+    } catch (error) {
+      Alert.alert('Không xóa được cấu hình Cloud', errorText(error));
+    }
+  }
+
+  async function doPushReport() {
+    if (generating || busy || pushingReport) return;
+    const currentSession = sessionsRef.current.find(row => row.id === chatIdRef.current);
+    if (!currentSession || !currentSession.messages.some(m => m.role === 'user')) {
+      Alert.alert('Chưa có báo cáo', 'Hãy chat ít nhất một lượt trước khi Push.');
+      return;
+    }
+    setPushingReport(true);
+    setPushStatus('Đang gửi báo cáo của session này...');
+    try {
+      const config = await readCloudConfig();
+      if (!config) {
+        setCloudSettingsOpen(true);
+        setPushStatus('Chưa cấu hình Cloud; không có dữ liệu nào được gửi.');
+        return;
+      }
+      // Fresh read covers completed turns even before the UI benchmark list updates.
+      const records = await readBenchmarks();
+      const installationId = await getInstallationId();
+      const report = buildCloudReport(currentSession, records, installationId, includeTranscript);
+      await pushCloudReport(report, config);
+      const sentAt = new Date().toLocaleString();
+      setPushStatus('Đã Push ' + sentAt + ' · ' + report.session.turns +
+        ' lượt · ' + report.summary.measuredTurns + ' phép đo' +
+        (report.includeTranscript ? ' · có hội thoại' : ' · chỉ số liệu') +
+        '. Push lại sẽ cập nhật bản này.');
+    } catch (error) {
+      setPushStatus('Push thất bại. Chưa xóa dữ liệu local.');
+      Alert.alert('Lỗi Push Report', errorText(error));
+    } finally {
+      setPushingReport(false);
+    }
+  }
+
+  function confirmPushReport() {
+    if (includeTranscript) {
+      Alert.alert(
+        'Gửi cả nội dung hội thoại?',
+        'Toàn bộ câu hỏi và câu trả lời của session này sẽ lên cloud. ' +
+        'Nhấn Push lần nữa sẽ ghi đè bản báo cáo trước (kể cả tùy chọn nội dung).',
+        [
+          { text: 'Hủy', style: 'cancel' },
+          { text: 'Push', onPress: () => { void doPushReport(); } },
+        ],
+      );
+    } else {
+      void doPushReport();
+    }
+  }
+
   const modelIsReady = !!ready[selectedId];
   const changing = busy || generating || !!downloadId;
   const currentDownload = downloadId === selectedId;
@@ -590,6 +685,48 @@ export default function App() {
         </View>
       </View>
 
+      <View style={s.cloudPanel}>
+        <View style={s.cloudTop}>
+          <View style={{ flex: 1 }}>
+            <Text style={s.sectionTitle}>CLOUD REPORT · THỦ CÔNG</Text>
+            <Text style={s.small}>
+              1 report / chat · Push lại cập nhật cùng bản · Không tự đồng bộ
+            </Text>
+          </View>
+          <Action title={cloudSettingsOpen ? 'Đóng' : cloudConfigured ? 'Cài đặt' : 'Kết nối'}
+            subtle onPress={() => setCloudSettingsOpen(!cloudSettingsOpen)} disabled={pushingReport} />
+        </View>
+        {cloudSettingsOpen && (
+          <View style={s.cloudSettings}>
+            <Text style={s.small}>Cloud endpoint HTTPS (Supabase Edge Function)</Text>
+            <TextInput style={s.cloudInput} autoCapitalize="none" autoCorrect={false}
+              keyboardType="url" placeholder="https://.../functions/v1/chatlab-report"
+              placeholderTextColor={MUTED} value={cloudEndpoint} onChangeText={setCloudEndpoint} />
+            <Text style={s.small}>Access key riêng, lưu mã hóa trên thiết bị</Text>
+            <TextInput style={s.cloudInput} autoCapitalize="none" autoCorrect={false}
+              secureTextEntry placeholder={cloudConfigured ? 'Nhập key mới để thay đổi' : 'Access key'}
+              placeholderTextColor={MUTED} value={cloudKey} onChangeText={setCloudKey} />
+            <View style={s.actionRow}>
+              <Action title="Lưu kết nối" onPress={() => void saveCloudSettings()} />
+              {cloudConfigured && <Action title="Ngắt kết nối" subtle
+                onPress={() => void disconnectCloud()} />}
+            </View>
+          </View>
+        )}
+        <View style={s.cloudBottom}>
+          <Pressable accessibilityRole="checkbox" accessibilityState={{ checked: includeTranscript }}
+            onPress={() => setIncludeTranscript(!includeTranscript)}
+            disabled={pushingReport} style={s.cloudConsent}>
+            <Text style={s.cloudCheck}>{includeTranscript ? '☑' : '☐'}</Text>
+            <Text style={s.cloudConsentLabel}>Kèm nội dung chat</Text>
+          </Pressable>
+          <Action title={pushingReport ? 'Đang Push...' : '↑ Push Report'}
+            onPress={confirmPushReport}
+            disabled={pushingReport || generating || !messages.some(m => m.role === 'user')} />
+        </View>
+        {!!pushStatus && <Text style={s.cloudStatus}>{pushStatus}</Text>}
+      </View>
+
       <FlatList
         ref={listRef} style={s.chat} contentContainerStyle={s.chatInner}
         data={messages} keyExtractor={m => m.id}
@@ -681,6 +818,17 @@ const s = StyleSheet.create({
   small: { color: MUTED, fontSize: 10 },
   metricsPanel: { backgroundColor: '#111a2c', paddingHorizontal: 14, paddingVertical: 10,
     borderBottomWidth: 1, borderBottomColor: '#263247' },
+  cloudPanel: { backgroundColor: '#162037', paddingHorizontal: 14, paddingVertical: 9,
+    borderBottomColor: '#263247', borderBottomWidth: 1 },
+  cloudTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 8 },
+  cloudBottom: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 7 },
+  cloudConsent: { flexDirection: 'row', alignItems: 'center', paddingVertical: 5, gap: 6 },
+  cloudConsentLabel: { color: '#e2e9f8', fontSize: 11 },
+  cloudCheck: { color: ACCENT, fontSize: 20 },
+  cloudSettings: { marginTop: 8, gap: 5 },
+  cloudInput: { paddingHorizontal: 11, paddingVertical: 8, borderRadius: 8, backgroundColor: '#26354f',
+    color: '#f5f7ff', fontSize: 12 },
+  cloudStatus: { color: '#a7d9ca', fontSize: 10, marginTop: 6 },
   metricsHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   metricsStatus: { color: '#7fcbac', fontSize: 10 },
   metricsRow: { flexDirection: 'row', marginTop: 9, gap: 7 },
