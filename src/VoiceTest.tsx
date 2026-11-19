@@ -1,5 +1,5 @@
 import React, { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
-import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Alert, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import * as Speech from 'expo-speech';
 import {
   ExpoSpeechRecognitionModule,
@@ -26,7 +26,8 @@ export type VoiceTestHandle = {
 type Props = {
   ready: boolean;
   generating: boolean;
-  onTranscript: (text: string, request: VoiceRequest) => void;
+  onTranscript: (text: string, request: VoiceRequest, autoSend: boolean) => void;
+  autoSend?: boolean;
 };
 type MicRun = {
   startedAt: number;
@@ -42,7 +43,7 @@ const MUTED = '#9daec7';
 const fmt = (value: number | null) => value == null ? '—' : Math.round(value) + ' ms';
 
 export const VoiceTest = forwardRef<VoiceTestHandle, Props>(function VoiceTest(
-  { ready, generating, onTranscript }, ref,
+  { ready, generating, onTranscript, autoSend = false }, ref,
 ) {
   const [locale, setLocale] = useState<VoiceLocale>('vi-VN');
   const [systemVoices, setSystemVoices] = useState<Speech.Voice[]>([]);
@@ -54,8 +55,11 @@ export const VoiceTest = forwardRef<VoiceTestHandle, Props>(function VoiceTest(
   const [ttsStartMs, setTtsStartMs] = useState<number | null>(null);
   const [roundtripMs, setRoundtripMs] = useState<number | null>(null);
   const [ttsDurationMs, setTtsDurationMs] = useState<number | null>(null);
+  const [speechError, setSpeechError] = useState('');
+  const [sttServices, setSttServices] = useState<string[]>([]);
   const micRef = useRef<MicRun | null>(null);
   const speechRun = useRef(0);
+  const watchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onTranscriptRef = useRef(onTranscript);
   onTranscriptRef.current = onTranscript;
   const available = systemVoices.filter(voice =>
@@ -65,6 +69,13 @@ export const VoiceTest = forwardRef<VoiceTestHandle, Props>(function VoiceTest(
 
   useEffect(() => {
     let active = true;
+    void (async () => {
+      if (Platform.OS !== 'android') return;
+      try {
+        const services = ExpoSpeechRecognitionModule.getSpeechRecognitionServices();
+        if (active) setSttServices(services);
+      } catch { /* Service enumeration may not be supported on some OEM builds. */ }
+    })();
     void Speech.getAvailableVoicesAsync()
       .then(voices => { if (active) setSystemVoices(voices); })
       .catch(() => setStatus('Không đọc được danh sách voice pack. Đang dùng giọng mặc định.'));
@@ -106,7 +117,7 @@ export const VoiceTest = forwardRef<VoiceTestHandle, Props>(function VoiceTest(
       startedAt: run.startedAt,
       sttMs: run.sttMs,
       locale: run.locale,
-    });
+    }, autoSend);
   });
 
   async function startMic() {
@@ -115,9 +126,9 @@ export const VoiceTest = forwardRef<VoiceTestHandle, Props>(function VoiceTest(
       speechRun.current += 1;
       await Speech.stop();
       setSpeaking(false);
-      if (!ExpoSpeechRecognitionModule.isRecognitionAvailable()) {
-        Alert.alert('Không có SpeechRecognizer', 'Cần bật hoặc cài dịch vụ Speech Recognition của Android / iOS.');
-        return;
+      const available = ExpoSpeechRecognitionModule.isRecognitionAvailable();
+      if (!available) {
+        setStatus('Android chưa xác nhận SpeechRecognizer. Đang thử trực tiếp để lấy lỗi cụ thể...');
       }
       const permission = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
       if (!permission.granted) {
@@ -151,6 +162,8 @@ export const VoiceTest = forwardRef<VoiceTestHandle, Props>(function VoiceTest(
 
   function stopVoice() {
     speechRun.current += 1;
+    if (watchdogRef.current !== null) clearTimeout(watchdogRef.current);
+    watchdogRef.current = null;
     void Speech.stop();
     setSpeaking(false);
     setStatus('Đã dừng đọc.');
@@ -159,6 +172,7 @@ export const VoiceTest = forwardRef<VoiceTestHandle, Props>(function VoiceTest(
   function speak(
     rawAnswer: string, request?: VoiceRequest,
     onTiming?: (patch: Partial<VoiceTimingUpdate>) => void,
+    testDefaultEnglish = false,
   ) {
     // Presentation-only cleanup; stored model text, prompt and inference are not modified.
     const spoken = rawAnswer
@@ -170,20 +184,42 @@ export const VoiceTest = forwardRef<VoiceTestHandle, Props>(function VoiceTest(
       return;
     }
     const speechText = spoken.slice(0, Math.min(3000, Speech.maxSpeechInputLength));
+    if (watchdogRef.current !== null) clearTimeout(watchdogRef.current);
     const run = ++speechRun.current;
-    setStatus('Đang khởi động giọng đọc...');
+    setSpeechError('');
+    setStatus('Đang khởi động giọng đọc' +
+      (testDefaultEnglish ? ' mặc định en-US...' : ' ' + (request?.locale ?? locale) + '...'));
     let beganAt: number | null = null;
     void Speech.stop().then(() => {
       if (run !== speechRun.current) return;
       const requestedAt = Date.now();
+      const resolvedLocale = testDefaultEnglish ? 'en-US' : request?.locale ?? locale;
+      const chosen = testDefaultEnglish ? undefined : chosenVoice;
       try {
+        watchdogRef.current = setTimeout(() => {
+          if (run !== speechRun.current || beganAt !== null) return;
+          void Speech.isSpeakingAsync().then(active => {
+            if (run !== speechRun.current || beganAt !== null) return;
+            const diagnostic = 'TTS không báo bắt đầu sau 8 giây; engine ' +
+              (active ? 'đang chạy nhưng không phát callback' : 'không chạy') +
+              '. Thử loa en-US, kiểm tra voice pack và Media volume của Android.';
+            setStatus(diagnostic);
+            setSpeechError(diagnostic);
+            onTiming?.({ voiceTtsStatus: 'error' });
+          }).catch(() => {
+            setStatus('TTS không phát callback sau 8 giây. Hãy thử loa en-US.');
+            onTiming?.({ voiceTtsStatus: 'error' });
+          });
+        }, 8000);
         Speech.speak(speechText, {
-          language: request?.locale ?? locale,
-          ...(chosenVoice ? { voice: chosenVoice.identifier } : {}),
+          language: resolvedLocale,
+          ...(chosen ? { voice: chosen.identifier } : {}),
           rate: 1,
           onStart: () => {
             if (run !== speechRun.current) return;
             beganAt = Date.now();
+            if (watchdogRef.current !== null) clearTimeout(watchdogRef.current);
+            watchdogRef.current = null;
             setSpeaking(true);
             setStatus('Đang đọc câu trả lời...');
             const startMs = beganAt - requestedAt;
@@ -202,6 +238,8 @@ export const VoiceTest = forwardRef<VoiceTestHandle, Props>(function VoiceTest(
           onDone: () => {
             if (run !== speechRun.current) return;
             setSpeaking(false);
+            if (watchdogRef.current !== null) clearTimeout(watchdogRef.current);
+            watchdogRef.current = null;
             setStatus('Voice Test xong · nhấn Mic để thử lượt tiếp');
             const duration = beganAt === null ? null : Date.now() - beganAt;
             setTtsDurationMs(duration);
@@ -214,18 +252,26 @@ export const VoiceTest = forwardRef<VoiceTestHandle, Props>(function VoiceTest(
           },
           onStopped: () => {
             if (run !== speechRun.current) return;
+            if (watchdogRef.current !== null) clearTimeout(watchdogRef.current);
+            watchdogRef.current = null;
             setSpeaking(false);
             setStatus('Đã dừng TTS.');
             onTiming?.({ voiceTtsStatus: 'stopped' });
           },
-          onError: () => {
+          onError: error => {
             if (run !== speechRun.current) return;
+            if (watchdogRef.current !== null) clearTimeout(watchdogRef.current);
+            watchdogRef.current = null;
             setSpeaking(false);
-            setStatus('TTS lỗi: kiểm tra cài đặt giọng đọc trên thiết bị.');
+            const detail = error && typeof error === 'object' ? JSON.stringify(error) : String(error);
+            setSpeechError(detail);
+            setStatus('Android TTS lỗi: ' + detail.slice(0, 160));
             onTiming?.({ voiceTtsStatus: 'error' });
           },
         });
       } catch (error) {
+        if (watchdogRef.current !== null) clearTimeout(watchdogRef.current);
+        watchdogRef.current = null;
         setSpeaking(false);
         setStatus('TTS lỗi: ' + (error instanceof Error ? error.message : String(error)));
         onTiming?.({ voiceTtsStatus: 'error' });
@@ -256,6 +302,20 @@ export const VoiceTest = forwardRef<VoiceTestHandle, Props>(function VoiceTest(
           </Pressable>
         )}
       </View>
+      <View style={styles.audioTests}>
+        <Pressable accessibilityRole="button" style={styles.audioTestButton}
+          disabled={generating} onPress={() => speak('Xin chào. Đây là thử nghiệm giọng tiếng Việt.')}>
+          <Text style={styles.audioTestLabel}>🔊 Thử loa VI</Text>
+        </Pressable>
+        <Pressable accessibilityRole="button" style={styles.audioTestButton}
+          disabled={generating} onPress={() => speak('Hello. This is the English voice test.', undefined, undefined, true)}>
+          <Text style={styles.audioTestLabel}>🔊 Thử loa EN</Text>
+        </Pressable>
+        {(speaking || status.includes('Đang khởi động')) &&
+          <Pressable accessibilityRole="button" style={styles.audioTestButton} onPress={stopVoice}>
+            <Text style={styles.audioTestLabel}>■ Dừng</Text>
+          </Pressable>}
+      </View>
       <Pressable accessibilityRole="button" style={styles.voicePicker}
         disabled={speaking || generating} onPress={() => setVoiceIndex(i => i + 1)}>
         <Text style={styles.voicePickerText}>Giọng hệ thống: {voiceLabel} ({locale})
@@ -267,8 +327,10 @@ export const VoiceTest = forwardRef<VoiceTestHandle, Props>(function VoiceTest(
         Mic → chữ: {fmt(sttMs)} · TTS start: {fmt(ttsStartMs)} ·
         {' '}Mic → TTS: {fmt(roundtripMs)} · Đọc: {fmt(ttsDurationMs)}
       </Text>
+      {!!speechError && <Text style={styles.errorText}>{speechError}</Text>}
       <Text style={styles.note}>
-        Đây là bản APK native: STT và TTS dùng dịch vụ hệ thống trên máy; STT có thể cần mạng, Qwen chạy local.
+        STT services: {sttServices.length ? sttServices.join(', ') : 'không tìm thấy qua API'}.
+        Đây là APK native: STT/TTS qua hệ thống; Qwen local.
         Thời gian Mic → chữ gồm cả lúc nói; TTS start đo callback, không phải mẫu âm thanh đầu tiên.
       </Text>
     </View>
@@ -284,6 +346,11 @@ const styles = StyleSheet.create({
   disabled: { opacity: 0.4 },
   locale: { backgroundColor: '#31405f', paddingHorizontal: 9, paddingVertical: 9, borderRadius: 9 },
   localeText: { color: FG, fontSize: 11, fontWeight: '700' },
+  audioTests: { flexDirection: 'row', gap: 6, paddingTop: 6, flexWrap: 'wrap' },
+  audioTestButton: { backgroundColor: '#253d5e', paddingVertical: 7,
+    paddingHorizontal: 10, borderRadius: 8 },
+  audioTestLabel: { color: '#e8f0ff', fontSize: 11, fontWeight: '700' },
+  errorText: { color: '#ffb7ab', fontSize: 11, paddingTop: 5 },
   voicePicker: { backgroundColor: '#263653', borderRadius: 7, padding: 7, marginTop: 4 },
   voicePickerText: { color: FG, fontSize: 11 },
   status: { color: '#bdcfff', marginTop: 5, fontSize: 11 },
