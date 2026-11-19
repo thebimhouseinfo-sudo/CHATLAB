@@ -229,7 +229,7 @@ export default function App() {
           top_p: 0.8,
           top_k: 20,
           min_p: 0,
-          repeat_penalty: 1.05,
+          penalty_repeat: 1.05,
           jinja: true,
           enable_thinking: false,
           chat_template_kwargs: { enable_thinking: false },
@@ -263,7 +263,7 @@ export default function App() {
           }
         },
       );
-      const finalText = result.text || streamText || '(Không có nội dung phản hồi)';
+      const finalText = result.content || result.text || streamText || '(Không có nội dung phản hồi)';
       setMessages(rows => rows.map(m =>
         m.id === assistantId ? { ...m, text: finalText } : m,
       ));
@@ -360,7 +360,7 @@ export default function App() {
         </View>
         {currentDownload && (
           <View style={s.progress}>
-            <View style={[s.progressFill, { width: (percentage ?? 4) + '%' }]} />
+            <View style={[s.progressFill, { width: ((percentage ?? 4) + '%') as `${number}%` }]} />
             <Text style={s.progressText}>
               {Math.round(downloadBytes / 1_000_000)} MB
               {downloadTotal > 0 ? ' / ' + Math.round(downloadTotal / 1_000_000) + ' MB' : ''}

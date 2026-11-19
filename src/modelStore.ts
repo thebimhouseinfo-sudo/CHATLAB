@@ -5,7 +5,7 @@ const directory = FS.documentDirectory + 'models/';
 export const modelPath = (m: ModelSpec) => directory + m.file;
 
 export async function isModelReady(m: ModelSpec): Promise<boolean> {
-  const info = await FS.getInfoAsync(modelPath(m), { size: true });
+  const info = await FS.getInfoAsync(modelPath(m));
   return info.exists && 'size' in info &&
     typeof info.size === 'number' && info.size >= m.minimumBytes;
 }
@@ -28,7 +28,7 @@ export async function downloadModel(
     if (!result || result.status !== 200) {
       throw new Error('Download failed (HTTP ' + (result?.status ?? 'unknown') + ')');
     }
-    const info = await FS.getInfoAsync(temporary, { size: true });
+    const info = await FS.getInfoAsync(temporary);
     if (!info.exists || !('size' in info) || !info.size || info.size < m.minimumBytes) {
       throw new Error('Downloaded file is smaller than expected; not loading it.');
     }
