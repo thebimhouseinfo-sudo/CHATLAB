@@ -19,37 +19,45 @@ recognizer and installed system TTS voice services.
 - Per-chat report payload keeps these metrics for optional manual Push.
 - No model behavior correction, spellcheck or LoRA modifications.
 
-## KEVoice Vietnamese native model: separate step, not falsely marked as working
+## New APK test: offline STT + native Vietnamese TTS
 
-The current KEVoice `Xenova/mms-tts-vie` adapter is a browser
-Transformers.js/ONNX-WASM implementation requiring Worker, Web Audio and
-IndexedDB. It cannot be imported into the React Native native runtime as-is.
+This branch now includes **two independent speech engines** to test on Beam Pro.
 
-**Rejected path:** do not load an externally hosted KEVoice webpage in
-CHATLAB's WebView. That introduces a cloud-dependent HTML/JS bridge and does
-not validate standalone native APK synthesis. The previous experimental bridge
-is intentionally removed from CHATLAB.
+- **STT Whisper Tiny multilingual** (`sherpa-onnx-whisper-tiny`, ~116 MB
+  compressed) — tap `↓ Tải STT offline` once, then use `🎙 Whisper`.
+  Press `■ Chốt Mic` after speaking. Native PCM capture is 16 kHz; the
+  Whisper model runs on-device. The transcript is editable before sending.
+  A manual selector also keeps the Android SpeechRecognizer path for comparison.
+- **Vietnamese TTS Piper** (`vits-piper-vi_VN-vais1000-medium-int8`,
+  ~22 MB archive) — select `TTS: Piper AI` and install once. The app
+  generates Vietnamese audio with sherpa-onnx and uses native PCM playback.
+  This is a **different model** from KEVoice's browser MMS.
+- **System TTS** via `expo-speech` remains an option, including VI/EN
+  test phrases and diagnostics. Android manifest now queries TTS and
+  RecognitionService via the Expo config plugin.
+- The APK uses `react-native-safe-area-context` for the status/navigation
+  bars and the expanded keyboard editor, rather than the deprecated
+  `SafeAreaView` that handled only iOS properly.
 
-Native candidate: the upstream `react-native-sherpa-onnx` library supports
-on-device VITS TTS, with Expo-compatible native build support. However the
-`Xenova/mms-tts-vie` ONNX export must be validated or converted for its VITS
-runtime and tokenizer; do not assume the browser ONNX is immediately compatible.
-For an initial native comparison, sherpa-onnx provides ready-made **Vietnamese
-Piper VITS** packages (different weights/voice than MMS/KEVoice):
-`vits-piper-vi_VN-vivos-x_low` and
-`vits-piper-vi_VN-vais1000-medium`. Evaluate their model license and quality
-separately.
+Suggested test utterance, then edit and confirm before Qwen:
+`Tôi đang benchmark local model và AI offline trên Beam Pro.`
 
-Native KEVoice acceptance prerequisites:
-1. Pin a tested React Native sherpa-onnx runtime and a verified license for the
-   Vietnamese VITS model, download it to app storage on user request.
-2. Load ONNX + tokenizer/config completely on device, without a remote WebView.
-3. Produce speech, play it natively, measure cold/warm model load, synthesis,
-   output audio duration, RTF and first-playback callback.
-4. Run the same Vietnamese test phrases against selected Android system voices.
-5. Confirm APK installs and speaks on Beam Pro before reporting native
-   Vietnamese AI-TTS as functional.
+Benchmark STT with separate capture-duration, offline inference and model-load
+timings. Benchmark native Piper synthesis, generated audio duration and RTF.
+Time to native PCM enqueue is only a proxy for first audible sample.
 
-Until that is done, this APK offers **system TTS only** as a real baseline.
-The KEVoice project remains useful for a separate model evaluation but is not
-mistaken for the app's built-in runtime.
+**Acceptance still pending:** CI must produce an APK and an actual Beam Pro
+installation must confirm mic input, transcription accuracy, native PCM
+playback, Media volume and absence of crashes. The source implementation alone
+does not establish success.
+
+## KeVoice compatibility
+
+The original KEVoice `Xenova/mms-tts-vie` adapter uses browser
+Transformers.js/ONNX-WASM with Worker/Web Audio/IndexedDB, so the APK does
+not import it directly or load a remote WebView. Piper VITS is an **independent
+native comparator**, not a claim that MMS/KeVoice weights now work natively.
+A future native MMS integration would require verifying/exporting model files
+and tokenizer compatibility.
+
+No spelling correction or behavioral changes to the Qwen model were introduced.
