@@ -1,6 +1,6 @@
 # CHATLAB — Native Offline Qwen Chat & Benchmark
 
-A real React Native / Expo app for **iPhone, iPad and Android**. Runs GGUF entirely on device through [llama.rn](https://github.com/mybigday/llama.rn) (llama.cpp). No API key, no cloud inference, no bundled model weights.
+A real React Native / Expo app for **iPhone, iPad and Android**. Runs GGUF entirely on device through [llama.rn](https://github.com/mybigday/llama.rn) (llama.cpp). No cloud inference and no bundled model weights. Cloud benchmark reporting is a separate, **optional manual push** feature.
 
 **Status:** source implementation / CI build candidate. Native compilation and on-device inference must be verified; do not label any model PASS until tested on a real phone.
 
@@ -25,6 +25,8 @@ Sizes are approximate transfer sizes, not peak RAM. Models are fetched from Hugg
 - Pick/download/load/unload/delete one model at a time; no more than one loaded LLM context.
 - Live, per-turn benchmark: wall-clock TTFT, provisional tokens/s while generating; **native** prefill tokens/s, decode tokens/s, generated/prompt tokens and total duration once completed.
 - Records model ID, quant, OS, device, CPU/Metal mode, load time and errors; export a CSV by native Share.
+- **Manual ↑ Push Report:** one report per chat session, repeated pushes overwrite/update the same cloud record. Sends model, native prefill/decode speed, token usage, number of turns and benchmark measurements. An optional **Kèm nội dung chat** checkbox, OFF by default, adds questions and answers after explicit confirmation. **Never uploads automatically.**
+- Cloud setup requires a *separate private backend* configured once with an HTTPS endpoint and a secure key on the device. Details in [docs/CLOUD_REPORT.md](docs/CLOUD_REPORT.md); the repository contains the server implementation and SQL schema, but no shared cloud secrets.
 - No fabricated RAM reading: this release does not attempt app process RAM measurement.
 - Default context 2048, optional 4096 / 8192; max response 160 tokens (reduced only when the remaining context is insufficient), non-thinking and fixed sampling settings for comparisons.
 - Full-context stress test exposes prompt tokens / context window, peak prompt tokens, number of turns, overflow warning and native truncated flag; it does not advertise 8K as a guaranteed stable maximum on every device.
@@ -66,7 +68,7 @@ Model loading/unloading and downloads are experimental. If the OS terminates the
 
 ## Planned next steps
 
-On-device real-world validation; downloadable signed Android APK; iOS developer-signed installation; temperature and memory diagnostics via optional platform-native profiling; STT from OS and later LoRA behavior packs. Those are **not** completed features of v0.1.
+Manual cloud-report end-to-end test against an isolated backend; on-device real-world validation; downloadable signed Android APK; iOS developer-signed installation; temperature and memory diagnostics via optional platform-native profiling; STT from OS and later LoRA behavior packs. Those are **not** completed features of v0.1.
 
 ## License and source attribution
 
