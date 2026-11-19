@@ -11,11 +11,15 @@ export type Benchmark = {
   requestedMaxTokens?: number;
   voiceLocale?: string;
   voiceSttMs?: number;
+  voiceSttEngine?: 'system' | 'whisper-tiny';
+  voiceSttDecodeMs?: number;
+  voiceSttAudioMs?: number;
+  voiceSttModelLoadMs?: number;
   voiceTtsStartMs?: number;
   voiceTtsDurationMs?: number;
   voiceRoundtripToSpeechMs?: number;
   voiceTtsStatus?: 'completed' | 'stopped' | 'error';
-  voiceTtsEngine?: 'system' | 'kevoice';
+  voiceTtsEngine?: 'system' | 'kevoice' | 'piper';
   voiceTtsModelId?: string;
   voiceTtsSynthesisMs?: number;
   voiceTtsModelLoadMs?: number;
@@ -84,7 +88,7 @@ export function csvBenchmark(rows: Benchmark[]): string {
   const fields: (keyof Benchmark)[] = [
     'date','device','platform','modelId','quant','chatId','turnIndex','contextWindow',
     'contextPromptTokens','contextTruncated','requestedMaxTokens',
-    'voiceLocale','voiceSttMs','voiceTtsStartMs','voiceTtsDurationMs',
+    'voiceLocale','voiceSttMs','voiceSttEngine','voiceSttDecodeMs','voiceSttAudioMs','voiceSttModelLoadMs','voiceTtsStartMs','voiceTtsDurationMs',
     'voiceRoundtripToSpeechMs','voiceTtsStatus','voiceTtsEngine','voiceTtsModelId',
     'voiceTtsSynthesisMs','voiceTtsModelLoadMs','voiceTtsAudioDurationMs','voiceTtsRealTimeFactor',
     'status','loadMs','ttftMs',
