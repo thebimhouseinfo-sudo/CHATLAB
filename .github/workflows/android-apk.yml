@@ -6,6 +6,11 @@ on:
     branches: [main]
 permissions:
   contents: read
+# Only the newest APK for a branch is useful; avoid simultaneous Gradle downloads
+# competing for the same Maven dependencies and burning CI minutes.
+concurrency:
+  group: chatlab-android-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
 jobs:
   android-apk:
     runs-on: ubuntu-24.04
