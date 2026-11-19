@@ -18,12 +18,17 @@ Sizes are approximate transfer sizes, not peak RAM. Models are fetched from Hugg
 
 ## App functionality
 
-- Native iOS/Android conversation (Vietnamese and English) with streaming response.
+- Native iOS/Android conversation (Vietnamese and English) with streaming response, clear chat bubbles and Stop.
+- **New Chat** creates a fresh conversation; last 40 conversation histories are saved on-device and can be reopened.
+- Compact model picker: switch among installed GGUFs, automatically unload old runtime before loading another. Chats remain attributed to the model that generated them.
+- Adjustable context 2K / 4K / 8K (requires model reload). Prompt token count is calculated from the actual chat template and model tokenizer; the full conversation is sent until the configured context fills. No arbitrary last-8-message truncation.
 - Pick/download/load/unload/delete one model at a time; no more than one loaded LLM context.
 - Live, per-turn benchmark: wall-clock TTFT, provisional tokens/s while generating; **native** prefill tokens/s, decode tokens/s, generated/prompt tokens and total duration once completed.
 - Records model ID, quant, OS, device, CPU/Metal mode, load time and errors; export a CSV by native Share.
 - No fabricated RAM reading: this release does not attempt app process RAM measurement.
-- Same context 2048, max response 160 tokens, non-thinking and sampling settings for comparisons.
+- Default context 2048, optional 4096 / 8192; max response 160 tokens (reduced only when the remaining context is insufficient), non-thinking and fixed sampling settings for comparisons.
+- Full-context stress test exposes prompt tokens / context window, peak prompt tokens, number of turns, overflow warning and native truncated flag; it does not advertise 8K as a guaranteed stable maximum on every device.
+- CSV stores chat ID, turn index, configured context, prompt token usage, requested token budget and native truncation status for each turn.
 - iOS uses Metal if llama.rn makes it available; Android starts CPU-only to keep a consistent low-end baseline.
 
 ## Build Android APK
@@ -55,7 +60,7 @@ Select your signing team in the Xcode project if prompted. **Expo Go cannot run 
 
 ## Reproducible comparison
 
-For each model, use the same preset prompts and generation parameters, after a fresh load. Record first-turn and warmed-up runs separately. Don't compare models on different context lengths, phones or thermal conditions as if they were identical. Use multiple runs (for example 5–10) and compare median throughput and TTFT. Check actual output quality, not just speed.
+For each model, use the same preset prompts and generation parameters, after a fresh load. Use **New Chat** to reset the conversation, then continue asking follow-up questions until the context warning or runtime limit occurs. Reopen older conversations from **Lịch sử**; reopen the matching GGUF before continuing a saved thread. Record first-turn and warmed-up runs separately. Don't compare models on different context lengths, phones or thermal conditions as if they were identical. Use multiple runs (for example 5–10) and compare median throughput and TTFT. Check actual output quality, not just speed.
 
 Model loading/unloading and downloads are experimental. If the OS terminates the app, record the model, device, RAM tier, context and reproduction steps. Avoid opening other memory-heavy apps while testing.
 
