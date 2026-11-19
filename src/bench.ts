@@ -9,6 +9,12 @@ export type Benchmark = {
   contextPromptTokens?: number;
   contextTruncated?: boolean;
   requestedMaxTokens?: number;
+  voiceLocale?: string;
+  voiceSttMs?: number;
+  voiceTtsStartMs?: number;
+  voiceTtsDurationMs?: number;
+  voiceRoundtripToSpeechMs?: number;
+  voiceTtsStatus?: 'completed' | 'stopped' | 'error';
   platform: string;
   device: string;
   date: string;
@@ -38,16 +44,40 @@ export async function readBenchmarks(): Promise<Benchmark[]> {
   }
 }
 
+// Serialized writes prevent late TTS callbacks overwriting newly saved chat turns.
+let benchmarkWriteQueue: Promise<void> = Promise.resolve();
+
+function modifyBenchmarks(updater: (rows: Benchmark[]) => Benchmark[]): Promise<void> {
+  benchmarkWriteQueue = benchmarkWriteQueue.catch(() => {}).then(async () => {
+    const rows = updater(await readBenchmarks());
+    await FS.writeAsStringAsync(file, JSON.stringify(rows.slice(-500), null, 2));
+  });
+  return benchmarkWriteQueue;
+}
+
 export async function appendBenchmark(entry: Benchmark): Promise<void> {
-  const rows = await readBenchmarks();
-  rows.push(entry);
-  await FS.writeAsStringAsync(file, JSON.stringify(rows.slice(-500), null, 2));
+  await modifyBenchmarks(rows => [...rows, entry]);
+}
+
+export type VoiceTimingUpdate = Pick<
+  Benchmark,
+  'voiceTtsStartMs' | 'voiceTtsDurationMs' |
+  'voiceRoundtripToSpeechMs' | 'voiceTtsStatus'
+>;
+
+export async function updateVoiceBenchmark(
+  chatId: string, turnIndex: number, changes: Partial<VoiceTimingUpdate>,
+): Promise<void> {
+  await modifyBenchmarks(rows => rows.map(row =>
+    row.chatId === chatId && row.turnIndex === turnIndex ? { ...row, ...changes } : row));
 }
 
 export function csvBenchmark(rows: Benchmark[]): string {
   const fields: (keyof Benchmark)[] = [
     'date','device','platform','modelId','quant','chatId','turnIndex','contextWindow',
     'contextPromptTokens','contextTruncated','requestedMaxTokens',
+    'voiceLocale','voiceSttMs','voiceTtsStartMs','voiceTtsDurationMs',
+    'voiceRoundtripToSpeechMs','voiceTtsStatus',
     'status','loadMs','ttftMs',
     'promptTokens','prefillTokensPerSec','generatedTokens',
     'decodeTokensPerSec','generationMs','totalMs','gpu','error',
