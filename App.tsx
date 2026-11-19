@@ -10,8 +10,12 @@ import { initLlama, type LlamaContext } from 'llama.rn';
 import { MODELS, type ModelId, type ModelSpec } from './src/models';
 import { downloadModel, isModelReady, modelPath, removeModel } from './src/modelStore';
 import { appendBenchmark, csvBenchmark, readBenchmarks, type Benchmark } from './src/bench';
+import { readChatSessions, writeChatSessions, type ChatMessage, type ChatSession } from './src/chatStore';
 
-type Message = { id: string; role: 'user' | 'assistant'; text: string };
+type Message = ChatMessage;
+type ContextSize = 2048 | 4096 | 8192;
+const CONTEXT_OPTIONS: readonly ContextSize[] = [2048, 4096, 8192];
+const MAX_PREDICT = 160;
 type LiveMetrics = {
   ttftMs: number | null;
   tokens: number;
@@ -67,6 +71,17 @@ export default function App() {
   const [downloadBytes, setDownloadBytes] = useState(0);
   const [downloadTotal, setDownloadTotal] = useState(0);
   const [loadedId, setLoadedId] = useState<ModelId | null>(null);
+  const [contextWindow, setContextWindow] = useState<ContextSize>(2048);
+  const [loadedWindow, setLoadedWindow] = useState<ContextSize | null>(null);
+  const [promptTokens, setPromptTokens] = useState<number | null>(null);
+  const [peakPromptTokens, setPeakPromptTokens] = useState(0);
+  const [contextTruncated, setContextTruncated] = useState(false);
+  const [modelsOpen, setModelsOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [activeChatId, setActiveChatId] = useState(idFor);
+  const [chatModelId, setChatModelId] = useState<ModelId>('qwen08-q4');
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [storageWarning, setStorageWarning] = useState('');
   const [loadMs, setLoadMs] = useState(0);
   const [busy, setBusy] = useState(false);
   const [generating, setGenerating] = useState(false);
@@ -79,14 +94,83 @@ export default function App() {
   const stopRef = useRef(false);
   const lastRenderedRef = useRef(0);
   const listRef = useRef<FlatList<Message>>(null);
+  const messagesRef = useRef<Message[]>([]);
+  const sessionsRef = useRef<ChatSession[]>([]);
+  const chatIdRef = useRef(activeChatId);
+  const chatModelRef = useRef(chatModelId);
 
   useEffect(() => {
     void refreshModels();
     void readBenchmarks().then(setBenchmarks);
+    void readChatSessions().then(rows => {
+      const valid = rows.filter(row => MODELS.some(m => m.id === row.modelId));
+      sessionsRef.current = valid;
+      setSessions(valid);
+      if (valid[0]) {
+        chatIdRef.current = valid[0].id;
+        chatModelRef.current = valid[0].modelId;
+        setActiveChatId(valid[0].id);
+        setChatModelId(valid[0].modelId);
+        setSelectedId(valid[0].modelId);
+        displayMessages(valid[0].messages);
+      }
+    });
     return () => {
       void contextRef.current?.release();
     };
   }, []);
+
+  function displayMessages(next: Message[]) {
+    messagesRef.current = next;
+    setMessages(next);
+  }
+
+  function saveChatSnapshot(items: Message[], modelId: ModelId, chatId: string) {
+    if (!items.some(m => m.role === 'user')) return;
+    const now = new Date().toISOString();
+    const previous = sessionsRef.current.find(row => row.id === chatId);
+    const snapshot: ChatSession = {
+      id: chatId, modelId, createdAt: previous?.createdAt ?? now, updatedAt: now,
+      title: items.find(m => m.role === 'user')?.text.slice(0, 50) || 'New Chat',
+      messages: items.filter(m => m.text.trim().length > 0),
+    };
+    const next = [snapshot, ...sessionsRef.current.filter(row => row.id !== chatId)].slice(0, 40);
+    sessionsRef.current = next;
+    setSessions(next);
+    void writeChatSessions(next).catch(() => setStorageWarning('Không lưu được lịch sử chat trên thiết bị.'));
+  }
+
+  function newChat(modelId: ModelId = chatModelRef.current) {
+    if (generating || busy) return;
+    const id = idFor();
+    chatIdRef.current = id;
+    chatModelRef.current = modelId;
+    setActiveChatId(id);
+    setChatModelId(modelId);
+    displayMessages([]);
+    setInput('');
+    setLive(null);
+    setPromptTokens(null);
+    setPeakPromptTokens(0);
+    setContextTruncated(false);
+    setHistoryOpen(false);
+  }
+
+  function openChat(session: ChatSession) {
+    if (generating || busy || downloadId) return;
+    chatIdRef.current = session.id;
+    chatModelRef.current = session.modelId;
+    setActiveChatId(session.id);
+    setChatModelId(session.modelId);
+    setSelectedId(session.modelId);
+    displayMessages(session.messages);
+    setInput('');
+    setLive(null);
+    setPromptTokens(null);
+    setPeakPromptTokens(0);
+    setContextTruncated(false);
+    setHistoryOpen(false);
+  }
 
   async function refreshModels() {
     const states = await Promise.all(MODELS.map(async m => [m.id, await isModelReady(m)] as const));
@@ -96,8 +180,15 @@ export default function App() {
   function chooseModel(m: ModelSpec) {
     if (busy || generating || downloadId) return;
     setSelectedId(m.id);
-    setMessages([]);
-    setLive(null);
+    setModelsOpen(false);
+    // One tap switches already-downloaded models; never hold two contexts at once.
+    if (ready[m.id]) {
+      if (loadedRef.current !== m.id || loadedWindow !== contextWindow) {
+        void loadSelected(m);
+      } else if (chatModelRef.current !== m.id) {
+        newChat(m.id);
+      }
+    }
   }
 
   async function downloadSelected() {
@@ -119,36 +210,50 @@ export default function App() {
     }
   }
 
-  async function loadSelected() {
+  async function loadSelected(model: ModelSpec = selected) {
     if (busy || generating || downloadId) return;
-    if (!ready[selectedId]) {
+    if (!ready[model.id]) {
       Alert.alert('Chưa có model', 'Hãy tải GGUF trước khi nạp.');
       return;
     }
     setBusy(true);
     try {
-      // Never keep two contexts in memory simultaneously on a low-RAM phone.
+      // Releasing before loading is essential on 4–8 GB devices.
       if (contextRef.current) {
         await contextRef.current.release();
         contextRef.current = null;
         loadedRef.current = null;
         setLoadedId(null);
+        setLoadedWindow(null);
       }
       const start = Date.now();
       const context = await initLlama({
-        model: modelPath(selected),
-        n_ctx: 2048,
+        model: modelPath(model),
+        n_ctx: contextWindow,
         n_batch: 256,
         n_threads: 4,
         n_gpu_layers: Platform.OS === 'ios' ? 99 : 0,
         use_mmap: true,
         use_mlock: false,
+        ctx_shift: false, // Do not silently discard history in the long-chat test.
       });
       contextRef.current = context;
-      loadedRef.current = selectedId;
-      setLoadedId(selectedId);
+      loadedRef.current = model.id;
+      setLoadedId(model.id);
+      setLoadedWindow(contextWindow);
       setLoadMs(Date.now() - start);
-      setMessages([]);
+      if (chatModelRef.current !== model.id) {
+        const id = idFor();
+        chatIdRef.current = id;
+        chatModelRef.current = model.id;
+        setActiveChatId(id);
+        setChatModelId(model.id);
+        displayMessages([]);
+        setInput('');
+        setPeakPromptTokens(0);
+      }
+      setPromptTokens(null);
+      setContextTruncated(false);
       setLive(null);
     } catch (error) {
       Alert.alert('Không nạp được GGUF', errorText(error));
@@ -165,6 +270,7 @@ export default function App() {
       contextRef.current = null;
       loadedRef.current = null;
       setLoadedId(null);
+      setLoadedWindow(null);
     } finally {
       setBusy(false);
     }
@@ -198,14 +304,50 @@ export default function App() {
   async function send() {
     const prompt = input.trim().slice(0, 1000);
     const context = contextRef.current;
-    if (!prompt || !context || generating || busy || loadedRef.current !== selectedId) return;
-    setInput('');
+    if (!prompt || !context || generating || busy ||
+        loadedRef.current !== selectedId || loadedWindow !== contextWindow ||
+        chatModelRef.current !== selectedId) return;
     setGenerating(true);
     stopRef.current = false;
-    const next = [...messages, { id: idFor(), role: 'user' as const, text: prompt }];
+
+    const next = [...messagesRef.current, { id: idFor(), role: 'user' as const, text: prompt }];
+    const chatMessages = [
+      { role: 'system', content: SYSTEM_PROMPT },
+      ...next.map(m => ({ role: m.role, content: m.text })),
+    ];
+    let measuredTokens: number;
+    try {
+      const formatted = await context.getFormattedChat(chatMessages, undefined, {
+        jinja: true, enable_thinking: false,
+        chat_template_kwargs: { enable_thinking: false },
+      });
+      measuredTokens = (await context.tokenize(formatted.prompt)).tokens.length;
+      setPromptTokens(measuredTokens);
+      setPeakPromptTokens(old => Math.max(old, measuredTokens));
+      if (measuredTokens >= contextWindow - 32) {
+        Alert.alert(
+          'Context đã đầy',
+          'Prompt dùng ' + measuredTokens + '/' + contextWindow +
+          ' tokens. Đã giữ nguyên hội thoại, không tự cắt tin nhắn. ' +
+          'Hãy chọn CTX lớn hơn rồi nạp lại model hoặc tạo New Chat.',
+        );
+        setGenerating(false);
+        return;
+      }
+    } catch (error) {
+      Alert.alert('Không đếm được token', errorText(error));
+      setGenerating(false);
+      return;
+    }
+
+    setInput('');
+    const currentId = chatIdRef.current;
+    const currentModel = chatModelRef.current;
     const assistantId = idFor();
-    setMessages([...next, { id: assistantId, role: 'assistant', text: '' }]);
+    displayMessages([...next, { id: assistantId, role: 'assistant', text: '' }]);
+    saveChatSnapshot(next, currentModel, currentId);
     setLive({ ttftMs: null, tokens: 0, speed: 0, prefill: null, totalMs: 0, status: 'Generating' });
+    const allowedPredict = Math.min(MAX_PREDICT, contextWindow - measuredTokens - 16);
     const start = Date.now();
     let firstToken: number | null = null;
     let emitted = 0;
@@ -220,11 +362,8 @@ export default function App() {
     try {
       const result = await context.completion(
         {
-          messages: [
-            { role: 'system', content: SYSTEM_PROMPT },
-            ...next.slice(-8).map(m => ({ role: m.role, content: m.text })),
-          ],
-          n_predict: 160,
+          messages: chatMessages,
+          n_predict: allowedPredict,
           temperature: 0.7,
           top_p: 0.8,
           top_k: 20,
@@ -264,12 +403,16 @@ export default function App() {
         },
       );
       const finalText = result.content || result.text || streamText || '(Không có nội dung phản hồi)';
-      setMessages(rows => rows.map(m =>
-        m.id === assistantId ? { ...m, text: finalText } : m,
-      ));
+      const completed = [...next, { id: assistantId, role: 'assistant' as const, text: finalText }];
+      displayMessages(completed);
+      saveChatSnapshot(completed, currentModel, currentId);
+      setContextTruncated(!!result.truncated);
       const timings = result.timings;
       const record: Benchmark = {
         ...baseRecord,
+        chatId: currentId, turnIndex: next.filter(m => m.role === 'user').length,
+        contextWindow, contextPromptTokens: measuredTokens,
+        contextTruncated: !!result.truncated, requestedMaxTokens: allowedPredict,
         ttftMs: firstToken,
         promptTokens: timings?.prompt_n ?? 0,
         prefillTokensPerSec: timings?.prompt_per_second ?? 0,
@@ -282,17 +425,21 @@ export default function App() {
       setLive({
         ttftMs: record.ttftMs, tokens: record.generatedTokens,
         speed: record.decodeTokensPerSec, prefill: record.prefillTokensPerSec,
-        totalMs: record.totalMs, status: record.status + ' · native timings',
+        totalMs: record.totalMs, status: (result.truncated ? 'TRUNCATED' : record.status) + ' · native timings',
       });
       await appendBenchmark(record);
       setBenchmarks(rows => [...rows, record]);
     } catch (error) {
       const message = errorText(error);
-      setMessages(rows => rows.map(m =>
-        m.id === assistantId ? { ...m, text: 'Lỗi: ' + message } : m,
-      ));
+      const failed = [...next, { id: assistantId, role: 'assistant' as const, text: 'Lỗi: ' + message }];
+      displayMessages(failed);
+      saveChatSnapshot(failed, currentModel, currentId);
       const record: Benchmark = {
-        ...baseRecord, ttftMs: firstToken, promptTokens: 0, prefillTokensPerSec: 0,
+        ...baseRecord,
+        chatId: currentId, turnIndex: next.filter(m => m.role === 'user').length,
+        contextWindow, contextPromptTokens: measuredTokens,
+        contextTruncated: false, requestedMaxTokens: allowedPredict,
+        ttftMs: firstToken, promptTokens: 0, prefillTokensPerSec: 0,
         generatedTokens: emitted, decodeTokensPerSec: 0, generationMs: 0,
         totalMs: Date.now() - start, status: 'error', error: message,
       };
@@ -316,6 +463,10 @@ export default function App() {
   const percentage = downloadTotal > 0
     ? Math.min(100, Math.round(downloadBytes * 100 / downloadTotal)) : null;
   const deviceText = deviceName + ' · ' + Platform.OS;
+  const chatReady = loadedId === selectedId && loadedWindow === contextWindow &&
+    chatModelId === selectedId && !busy;
+  const turns = messages.filter(m => m.role === 'user').length;
+  const usage = promptTokens === null ? null : Math.round(promptTokens / contextWindow * 100);
 
   return (
     <SafeAreaView style={s.root}>
@@ -325,12 +476,41 @@ export default function App() {
           <Text style={s.title}>CHATLAB</Text>
           <Text style={s.subtitle}>LOCAL · NATIVE LLM · {deviceText}</Text>
         </View>
-        <Text style={s.offline}>OFFLINE CHAT</Text>
+        <View style={s.headerActions}>
+          <Action title={historyOpen ? 'Ẩn chat' : 'Lịch sử'} subtle
+            onPress={() => { setHistoryOpen(!historyOpen); setModelsOpen(false); }} disabled={generating} />
+          <Action title="+ New Chat" onPress={() => newChat(loadedRef.current ?? selectedId)}
+            disabled={generating || busy} />
+        </View>
       </View>
 
+      {historyOpen && (
+        <View style={s.historyPanel}>
+          <Text style={s.sectionTitle}>HỘI THOẠI ĐÃ LƯU · {sessions.length}</Text>
+          <ScrollView style={s.historyList} nestedScrollEnabled>
+            {sessions.length === 0 && <Text style={s.small}>Chưa có hội thoại nào.</Text>}
+            {sessions.map(session => (
+              <Pressable key={session.id} onPress={() => openChat(session)}
+                accessibilityRole="button" style={s.historyItem}>
+                <Text style={s.historyTitle} numberOfLines={1}>{session.title}</Text>
+                <Text style={s.small}>{MODELS.find(m => m.id === session.modelId)?.name ?? session.modelId}
+                  {' · '}{session.messages.filter(m => m.role === 'user').length} lượt</Text>
+              </Pressable>
+            ))}
+          </ScrollView>
+        </View>
+      )}
+
       <View style={s.catalogue}>
-        <Text style={s.sectionTitle}>MODEL LAB · 0.8B / 2B</Text>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={s.modelStrip}>
+        <Pressable accessibilityRole="button" disabled={changing}
+          style={s.modelHeader} onPress={() => { setModelsOpen(!modelsOpen); setHistoryOpen(false); }}>
+          <View style={{ flex: 1 }}>
+            <Text style={s.sectionTitle}>MODEL · {loadedId === selectedId ? 'ĐANG NẠP' : 'CHỌN MODEL'}</Text>
+            <Text style={s.activeModel} numberOfLines={1}>{selected.name} · {selected.quant}</Text>
+          </View>
+          <Text style={s.switchHint}>{modelsOpen ? '▲ Đóng' : '⇄ Đổi model'}</Text>
+        </Pressable>
+        {modelsOpen && <ScrollView horizontal showsHorizontalScrollIndicator={false} style={s.modelStrip}>
           {MODELS.map(m => (
             <Pressable
               key={m.id} accessibilityRole="button" disabled={changing}
@@ -345,15 +525,26 @@ export default function App() {
               </Text>
             </Pressable>
           ))}
-        </ScrollView>
-        <Text style={s.modelDescription}>{selected.description}</Text>
+        </ScrollView>}
+        {modelsOpen && <Text style={s.modelDescription}>{selected.description}</Text>}
+        <View style={s.contextBar}>
+          <Text style={s.small}>CTX (nạp lại nếu đổi): </Text>
+          {CONTEXT_OPTIONS.map(size => (
+            <Pressable key={size} disabled={changing} accessibilityRole="button"
+              onPress={() => setContextWindow(size)}
+              style={[s.contextChip, contextWindow === size && s.contextChipActive]}>
+              <Text style={s.contextChipText}>{size / 1024}K</Text>
+            </Pressable>
+          ))}
+        </View>
         <View style={s.actionRow}>
           {!modelIsReady
             ? <Action title={currentDownload ? 'Đang tải...' : '↓ Tải GGUF'}
                 onPress={() => void downloadSelected()} disabled={changing} />
-            : loadedId === selectedId
+            : loadedId === selectedId && loadedWindow === contextWindow
               ? <Action title="✓ Đang chạy" onPress={() => {}} disabled />
-              : <Action title="▶ Nạp model" onPress={() => void loadSelected()} disabled={changing} />}
+              : <Action title={loadedId === selectedId ? '↻ Nạp lại CTX' : '▶ Nạp model'}
+                  onPress={() => void loadSelected()} disabled={changing} />}
           {loadedId && <Action title="Thoát model" subtle onPress={() => void unload()} disabled={changing} />}
           {modelIsReady && loadedId !== selectedId &&
             <Action title="Xóa file" subtle onPress={() => void deleteSelected()} disabled={changing} />}
@@ -372,6 +563,15 @@ export default function App() {
       </View>
 
       <View style={s.metricsPanel}>
+        <View style={s.contextInfo}>
+          <Text style={s.small}>CHAT #{turns} lượt · CTX {loadedWindow ? loadedWindow / 1024 + 'K' : '—'}
+            {' · '}Prompt {promptTokens === null ? '—' : promptTokens} / {contextWindow} tokens
+            {usage === null ? '' : ' (' + usage + '%)'}
+            {' · '}Peak {peakPromptTokens}</Text>
+          {(contextTruncated || (usage !== null && usage >= 85)) &&
+            <Text style={s.contextDanger}>{contextTruncated ? 'ĐÃ TRUNCATE' : 'SẮP ĐẦY CONTEXT'}</Text>}
+        </View>
+        {storageWarning ? <Text style={s.contextDanger}>{storageWarning}</Text> : null}
         <View style={s.metricsHeader}>
           <Text style={s.sectionTitle}>LIVE BENCHMARK</Text>
           <Text style={s.metricsStatus}>{live?.status ?? 'Chưa có lượt chat'}</Text>
@@ -407,7 +607,7 @@ export default function App() {
         }
         renderItem={({ item }) => (
           <View style={[s.bubble, item.role === 'user' ? s.userBubble : s.aiBubble]}>
-            <Text style={s.bubbleRole}>{item.role === 'user' ? 'YOU' : 'QWEN · ' + (loadedId ?? selectedId)}</Text>
+            <Text style={s.bubbleRole}>{item.role === 'user' ? 'YOU' : 'QWEN · ' + chatModelId}</Text>
             <Text style={s.bubbleText}>{item.text || (generating ? '● ● ●' : '')}</Text>
           </View>
         )}
@@ -416,17 +616,17 @@ export default function App() {
         <View style={s.composer}>
           <TextInput
             style={s.input} value={input} onChangeText={setInput}
-            placeholder={loadedId === selectedId ? 'Nhắn tin...' : 'Hãy nạp model để bắt đầu'}
+            placeholder={chatReady ? 'Nhắn tin...' : 'Nạp model / mở đúng model để tiếp tục'}
             placeholderTextColor={MUTED}
-            editable={!generating && loadedId === selectedId}
+            editable={!generating && chatReady}
             multiline maxLength={1000}
           />
           {generating
             ? <Action title="■ Dừng" onPress={() => void stop()} />
             : <Action title="Gửi" onPress={() => void send()}
-                disabled={!input.trim() || busy || loadedId !== selectedId} />}
+                disabled={!input.trim() || !chatReady} />}
         </View>
-        <Text style={s.footer}>Context 2K · max 160 tokens · non-thinking · iOS Metal / Android CPU baseline</Text>
+        <Text style={s.footer}>Context {contextWindow / 1024}K · tối đa {MAX_PREDICT} tokens / lượt · giữ toàn bộ lịch sử đến khi đầy · iOS Metal / Android CPU</Text>
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
@@ -438,6 +638,22 @@ const s = StyleSheet.create({
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   title: { color: '#f4f7ff', fontSize: 23, fontWeight: '800', letterSpacing: 2.5 },
   subtitle: { color: MUTED, fontSize: 9, marginTop: 2 },
+  headerActions: { flexDirection: 'row', gap: 6, alignItems: 'center' },
+  historyPanel: { padding: 12, backgroundColor: '#131f33', maxHeight: 190 },
+  historyList: { marginTop: 7 },
+  historyItem: { borderBottomColor: '#34415b', borderBottomWidth: 1, paddingVertical: 8 },
+  historyTitle: { color: '#f5f7ff', fontSize: 13, marginBottom: 4 },
+  contextInfo: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    marginBottom: 8, flexWrap: 'wrap', gap: 4 },
+  contextDanger: { color: '#ffb3a6', fontSize: 10, fontWeight: '700' },
+  modelHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  activeModel: { color: '#f1f5ff', fontSize: 14, fontWeight: '700', marginTop: 4 },
+  switchHint: { color: ACCENT, fontSize: 12, fontWeight: '700', paddingLeft: 12 },
+  contextBar: { flexDirection: 'row', alignItems: 'center', marginTop: 8, gap: 6 },
+  contextChip: { paddingVertical: 5, paddingHorizontal: 10,
+    backgroundColor: '#2c3952', borderRadius: 8 },
+  contextChipActive: { borderColor: ACCENT, borderWidth: 1, backgroundColor: '#30477c' },
+  contextChipText: { color: '#f3f6ff', fontSize: 11, fontWeight: '700' },
   offline: { color: '#9ae7c4', borderColor: '#2e6754', borderWidth: 1,
     borderRadius: 6, padding: 6, fontSize: 9, fontWeight: '700' },
   catalogue: { backgroundColor: PANEL, paddingHorizontal: 14, paddingTop: 12, paddingBottom: 12 },
