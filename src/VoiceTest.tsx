@@ -6,12 +6,17 @@ import {
   useSpeechRecognitionEvent,
 } from 'expo-speech-recognition';
 import type { VoiceTimingUpdate } from './bench';
+import { OFFLINE_STT_MODEL, OfflineSttRecorder, installOfflineStt, offlineSttReady } from './offlineStt';
 
 export type VoiceLocale = 'vi-VN' | 'en-US';
 export type VoiceRequest = {
   startedAt: number;
   sttMs: number;
   locale: VoiceLocale;
+  engine?: 'system' | 'whisper-tiny';
+  sttDecodeMs?: number;
+  sttAudioMs?: number;
+  sttModelLoadMs?: number;
 };
 
 export type VoiceTestHandle = {
@@ -46,6 +51,11 @@ export const VoiceTest = forwardRef<VoiceTestHandle, Props>(function VoiceTest(
   { ready, generating, onTranscript, autoSend = false }, ref,
 ) {
   const [locale, setLocale] = useState<VoiceLocale>('vi-VN');
+  const [sttEngine, setSttEngine] = useState<'offline' | 'system'>('offline');
+  const [sttInstalled, setSttInstalled] = useState(false);
+  const [installingStt, setInstallingStt] = useState(false);
+  const [sttInstallStatus, setSttInstallStatus] = useState('');
+  const [sttBusy, setSttBusy] = useState(false);
   const [systemVoices, setSystemVoices] = useState<Speech.Voice[]>([]);
   const [voiceIndex, setVoiceIndex] = useState(0);
   const [listening, setListening] = useState(false);
@@ -59,6 +69,8 @@ export const VoiceTest = forwardRef<VoiceTestHandle, Props>(function VoiceTest(
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [sttServices, setSttServices] = useState<string[]>([]);
   const micRef = useRef<MicRun | null>(null);
+  const offlineRecorder = useRef<OfflineSttRecorder | null>(null);
+  const offlineMicStarted = useRef(0);
   const speechRun = useRef(0);
   const watchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onTranscriptRef = useRef(onTranscript);
@@ -77,23 +89,28 @@ export const VoiceTest = forwardRef<VoiceTestHandle, Props>(function VoiceTest(
         if (active) setSttServices(services);
       } catch { /* Service enumeration may not be supported on some OEM builds. */ }
     })();
+    void offlineSttReady()
+      .then(installed => { if (active) setSttInstalled(installed); })
+      .catch(() => {});
     void Speech.getAvailableVoicesAsync()
       .then(voices => { if (active) setSystemVoices(voices); })
       .catch(() => setStatus('Không đọc được danh sách voice pack. Đang dùng giọng mặc định.'));
-    return () => { active = false; };
+    return () => {
+      active = false;
+      void offlineRecorder.current?.close();
+    };
   }, []);
 
   useSpeechRecognitionEvent('start', () => setListening(true));
   useSpeechRecognitionEvent('result', event => {
     const text = event.results?.[0]?.transcript?.trim() ?? '';
     if (!text) return;
-    if (event.isFinal && micRef.current) {
+    if (micRef.current) {
+      // OEM recognizers may only emit partial results and then onEnd.
       micRef.current.finalText = text;
-      micRef.current.sttMs = Date.now() - micRef.current.startedAt;
-      setStatus('STT xong: ' + text.slice(0, 70));
-    } else {
-      setStatus('Đang nghe: ' + text.slice(0, 70));
+      if (event.isFinal) micRef.current.sttMs = Date.now() - micRef.current.startedAt;
     }
+    setStatus((event.isFinal ? 'STT xong: ' : 'Đang nghe: ') + text.slice(0, 70));
   });
   useSpeechRecognitionEvent('error', event => {
     if (micRef.current) micRef.current.error = true;
@@ -105,10 +122,11 @@ export const VoiceTest = forwardRef<VoiceTestHandle, Props>(function VoiceTest(
     const run = micRef.current;
     micRef.current = null;
     if (!run || run.error) return;
-    if (!run.finalText || run.sttMs == null) {
-      setStatus('Không nhận được câu hoàn chỉnh. Nhấn Mic để thử lại.');
+    if (!run.finalText) {
+      setStatus('SpeechRecognizer không trả văn bản. Thử STT offline Whisper trong phần Giọng / lỗi.');
       return;
     }
+    run.sttMs ??= Date.now() - run.startedAt;
     setSttMs(run.sttMs);
     setTtsStartMs(null);
     setTtsDurationMs(null);
@@ -118,11 +136,88 @@ export const VoiceTest = forwardRef<VoiceTestHandle, Props>(function VoiceTest(
       startedAt: run.startedAt,
       sttMs: run.sttMs,
       locale: run.locale,
+      engine: 'system',
     }, autoSend);
   });
 
+  async function installModel() {
+    if (installingStt || listening || generating) return;
+    setInstallingStt(true);
+    setSttInstallStatus('Đang chuẩn bị tải Whisper Tiny...');
+    try {
+      await installOfflineStt((phase, percent) => {
+        setSttInstallStatus(phase + (percent == null ? '' : ' ' + Math.round(percent) + '%'));
+      });
+      setSttInstalled(true);
+      setSttEngine('offline');
+      setSttInstallStatus('Whisper Tiny đa ngôn ngữ đã sẵn sàng để nhận dạng offline.');
+    } catch (error) {
+      setSttInstallStatus('Tải STT thất bại: ' + (error instanceof Error ? error.message : String(error)));
+    } finally { setInstallingStt(false); }
+  }
+
+  async function startOfflineMic() {
+    if (sttBusy || installingStt) return;
+    if (!sttInstalled) {
+      setStatus('Hãy bấm ↓ Tải STT offline trước (Whisper Tiny ~116 MB).');
+      return;
+    }
+    setSttBusy(true);
+    setStatus('Đang mở microphone PCM offline...');
+    try {
+      await Speech.stop();
+      setSpeaking(false);
+      const recorder = new OfflineSttRecorder();
+      offlineRecorder.current = recorder;
+      await recorder.start();
+      offlineMicStarted.current = Date.now();
+      setListening(true);
+      setStatus('Đang ghi âm trực tiếp 16 kHz · nhấn Chốt Mic (tối đa 24 giây).');
+    } catch (error) {
+      setStatus('STT offline lỗi mở mic: ' + (error instanceof Error ? error.message : String(error)));
+      void offlineRecorder.current?.close();
+      offlineRecorder.current = null;
+      setListening(false);
+    } finally { setSttBusy(false); }
+  }
+
+  async function stopOfflineMic() {
+    const recorder = offlineRecorder.current;
+    if (!recorder || sttBusy) return;
+    offlineRecorder.current = null;
+    setListening(false);
+    setSttBusy(true);
+    setStatus('Whisper đang nhận dạng tiếng Việt / English trên thiết bị...');
+    const startAt = offlineMicStarted.current;
+    try {
+      const result = await recorder.stopAndTranscribe();
+      if (!result.text) {
+        setStatus('Whisper chưa nhận được câu rõ ràng; thử nói sát mic hơn.');
+        return;
+      }
+      setSttMs(Date.now() - startAt);
+      setTtsStartMs(null);
+      setTtsDurationMs(null);
+      setRoundtripMs(null);
+      setStatus('Whisper nhận dạng: ' + result.text.slice(0, 80));
+      onTranscriptRef.current(result.text, {
+        startedAt: startAt,
+        sttMs: Date.now() - startAt,
+        locale, engine: 'whisper-tiny',
+        sttDecodeMs: result.inferenceMs,
+        sttAudioMs: result.audioDurationMs,
+        sttModelLoadMs: result.modelLoadMs,
+      }, autoSend);
+    } catch (error) {
+      setStatus('Whisper STT lỗi: ' + (error instanceof Error ? error.message : String(error)));
+    } finally {
+      setSttBusy(false);
+    }
+  }
+
   async function startMic() {
-    if (!ready || generating || listening || micRef.current) return;
+    if (!ready || generating || listening || micRef.current || sttBusy) return;
+    if (sttEngine === 'offline') return startOfflineMic();
     try {
       speechRun.current += 1;
       await Speech.stop();
@@ -157,8 +252,12 @@ export const VoiceTest = forwardRef<VoiceTestHandle, Props>(function VoiceTest(
 
   function stopMic() {
     if (!listening) return;
-    setStatus('Đang kết thúc nhận dạng...');
-    ExpoSpeechRecognitionModule.stop();
+    if (sttEngine === 'offline') {
+      void stopOfflineMic();
+    } else {
+      setStatus('Đang chốt nhận dạng hệ thống...');
+      ExpoSpeechRecognitionModule.stop();
+    }
   }
 
   function stopVoice() {
@@ -286,9 +385,9 @@ export const VoiceTest = forwardRef<VoiceTestHandle, Props>(function VoiceTest(
     <View style={styles.panel}>
       <View style={styles.controls}>
         <Pressable accessibilityRole="button" onPress={() => listening ? stopMic() : void startMic()}
-          disabled={generating || (!listening && !ready)}
-          style={[styles.button, (generating || (!listening && !ready)) && styles.disabled]}>
-          <Text style={styles.buttonText}>{listening ? '■ Chốt Mic' : '🎙 Voice Test'}</Text>
+          disabled={generating || sttBusy || installingStt || (!listening && !ready)}
+          style={[styles.button, (generating || sttBusy || installingStt || (!listening && !ready)) && styles.disabled]}>
+          <Text style={styles.buttonText}>{sttBusy ? 'STT...' : listening ? '■ Chốt Mic' : '🎙 ' + (sttEngine === 'offline' ? 'Whisper' : 'Hệ thống')}</Text>
         </Pressable>
         <Pressable accessibilityRole="button" onPress={() => {
             setLocale(locale === 'vi-VN' ? 'en-US' : 'vi-VN');
@@ -304,6 +403,19 @@ export const VoiceTest = forwardRef<VoiceTestHandle, Props>(function VoiceTest(
         )}
       </View>
       <View style={styles.audioTests}>
+        {!sttInstalled && <Pressable accessibilityRole="button"
+          disabled={installingStt || generating} style={styles.audioTestButton}
+          onPress={() => void installModel()}>
+          <Text style={styles.audioTestLabel}>{installingStt ? 'Đang tải STT...' : '↓ Tải STT offline (~116 MB)'}</Text>
+        </Pressable>}
+        <Pressable accessibilityRole="button" style={styles.audioTestButton}
+          disabled={listening || sttBusy}
+          onPress={() => {
+            setSttEngine(x => x === 'offline' ? 'system' : 'offline');
+            setStatus('STT engine đã chuyển, nhấn Mic để thử.');
+          }}>
+          <Text style={styles.audioTestLabel}>STT: {sttEngine === 'offline' ? 'Whisper (offline)' : 'Android'} ⇄</Text>
+        </Pressable>
         <Pressable accessibilityRole="button" style={styles.audioTestButton}
           disabled={generating} onPress={() => speak('Xin chào. Đây là thử nghiệm giọng tiếng Việt.')}>
           <Text style={styles.audioTestLabel}>🔊 Thử loa VI</Text>
@@ -327,7 +439,8 @@ export const VoiceTest = forwardRef<VoiceTestHandle, Props>(function VoiceTest(
           {available.length > 1 ? ' · Nhấn để đổi (' + available.length + ')' : ''}
         </Text>
       </Pressable>}
-      <Text style={styles.status} numberOfLines={2}>{status}</Text>
+      {!!sttInstallStatus && <Text style={styles.status}>{sttInstallStatus}</Text>}
+      <Text style={styles.status} numberOfLines={3}>{status}</Text>
       {detailsOpen && <Text style={styles.metrics}>
         Mic → chữ: {fmt(sttMs)} · TTS start: {fmt(ttsStartMs)} ·
         {' '}Mic → TTS: {fmt(roundtripMs)} · Đọc: {fmt(ttsDurationMs)}
