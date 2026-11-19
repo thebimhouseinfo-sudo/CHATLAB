@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  ActivityIndicator, Alert, FlatList, KeyboardAvoidingView, Platform,
+  ActivityIndicator, Alert, FlatList, KeyboardAvoidingView, Keyboard, Modal, Platform,
   Pressable, SafeAreaView, ScrollView, Share, StyleSheet,
   Text, TextInput, View,
 } from 'react-native';
@@ -99,6 +99,7 @@ export default function App() {
   const [generating, setGenerating] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
+  const [composerExpanded, setComposerExpanded] = useState(false);
   const [live, setLive] = useState<LiveMetrics | null>(null);
   const [benchmarks, setBenchmarks] = useState<Benchmark[]>([]);
   const contextRef = useRef<LlamaContext | null>(null);
@@ -172,6 +173,7 @@ export default function App() {
     setContextTruncated(false);
     setHistoryOpen(false);
     setPushStatus('');
+    setComposerExpanded(false);
     voiceRef.current?.stop();
   }
 
@@ -190,6 +192,7 @@ export default function App() {
     setContextTruncated(false);
     setHistoryOpen(false);
     setPushStatus('');
+    setComposerExpanded(false);
     voiceRef.current?.stop();
   }
 
@@ -362,6 +365,8 @@ export default function App() {
     }
 
     setInput('');
+    setComposerExpanded(false);
+    Keyboard.dismiss();
     const currentId = chatIdRef.current;
     const currentModel = chatModelRef.current;
     const assistantId = idFor();
@@ -772,23 +777,55 @@ export default function App() {
         )}
       />
       <VoiceTest ref={voiceRef} ready={chatReady} generating={generating}
-        onTranscript={(text, request) => { void send(text, request); }} />
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-        <View style={s.composer}>
-          <TextInput
-            style={s.input} value={input} onChangeText={setInput}
-            placeholder={chatReady ? 'Nhắn tin...' : 'Nạp model / mở đúng model để tiếp tục'}
-            placeholderTextColor={MUTED}
-            editable={!generating && chatReady}
-            multiline maxLength={1000}
-          />
-          {generating
-            ? <Action title="■ Dừng" onPress={() => void stop()} />
-            : <Action title="Gửi" onPress={() => void send()}
-                disabled={!input.trim() || !chatReady} />}
-        </View>
-        <Text style={s.footer}>Context {contextWindow / 1024}K · tối đa {MAX_PREDICT} tokens / lượt · giữ toàn bộ lịch sử đến khi đầy · iOS Metal / Android CPU</Text>
-      </KeyboardAvoidingView>
+        onTranscript={(text, request, autoSend) => {
+          setInput(text);
+          if (autoSend) {
+            void send(text, request);
+          } else {
+            setComposerExpanded(true);
+          }
+        }} />
+      <View style={s.composer}>
+        <Pressable accessibilityRole="button" onPress={() => setComposerExpanded(true)}
+          disabled={generating || !chatReady} style={s.composerPreview}>
+          <Text style={[s.inputPreview, !input && s.inputHint]} numberOfLines={2}>
+            {input || (chatReady ? 'Nhấn để soạn / sửa tin nhắn...' : 'Nạp model để chat')}
+          </Text>
+          <Text style={s.composeExpand}>↗ Sửa</Text>
+        </Pressable>
+        {generating
+          ? <Action title="■ Dừng" onPress={() => void stop()} />
+          : <Action title="Gửi" onPress={() => void send()}
+              disabled={!input.trim() || !chatReady} />}
+      </View>
+      <Text style={s.footer}>Giữ bản nháp khi sửa · Context {contextWindow / 1024}K · tối đa {MAX_PREDICT} tokens/lượt</Text>
+      <Modal visible={composerExpanded} animationType="slide" presentationStyle="fullScreen"
+        onRequestClose={() => { Keyboard.dismiss(); setComposerExpanded(false); }}>
+        <SafeAreaView style={s.editorPage}>
+          <View style={s.editorHeader}>
+            <View style={{ flex: 1 }}>
+              <Text style={s.editorTitle}>Soạn / sửa tin nhắn</Text>
+              <Text style={s.editorSubtitle}>{input.length}/1000 ký tự · không tự gửi</Text>
+            </View>
+            <Action title="Đóng" subtle onPress={() => { Keyboard.dismiss(); setComposerExpanded(false); }} />
+          </View>
+          <KeyboardAvoidingView style={s.editorBody}
+            behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+            <TextInput style={s.editorInput} value={input} onChangeText={setInput}
+              autoFocus multiline maxLength={1000} textAlignVertical="top"
+              placeholder="Nhập hoặc sửa nội dung đã nhận dạng từ mic..."
+              placeholderTextColor={MUTED} scrollEnabled
+              editable={!generating && chatReady}
+              accessibilityLabel="Nội dung tin nhắn có thể chỉnh sửa trước khi gửi" />
+            <View style={s.editorActions}>
+              <Action title="Giữ nháp" subtle
+                onPress={() => { Keyboard.dismiss(); setComposerExpanded(false); }} />
+              <Action title="Gửi tin nhắn" onPress={() => void send()}
+                disabled={!input.trim() || generating || !chatReady} />
+            </View>
+          </KeyboardAvoidingView>
+        </SafeAreaView>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -877,10 +914,25 @@ const s = StyleSheet.create({
   bubbleText: { color: '#f6f7fb', fontSize: 14, lineHeight: 21 },
   speakAnswer: { alignSelf: 'flex-start', marginTop: 7 },
   speakAnswerLabel: { color: ACCENT, fontSize: 11, fontWeight: '700' },
-  composer: { backgroundColor: '#141e31', flexDirection: 'row', alignItems: 'flex-end',
-    gap: 9, padding: 12, paddingBottom: 5 },
-  input: { flex: 1, color: '#f6f7ff', backgroundColor: '#25324b', borderRadius: 11,
-    fontSize: 14, paddingHorizontal: 12, paddingVertical: 9, maxHeight: 110 },
+  composer: { backgroundColor: '#141e31', flexDirection: 'row', alignItems: 'center',
+    gap: 9, paddingHorizontal: 12, paddingTop: 9, paddingBottom: 7 },
+  composerPreview: { flex: 1, minHeight: 50, maxHeight: 80, borderRadius: 11,
+    backgroundColor: '#25324b', flexDirection: 'row', alignItems: 'center',
+    justifyContent: 'space-between', paddingHorizontal: 12, gap: 6 },
+  inputPreview: { flex: 1, color: '#f6f7ff', fontSize: 14, lineHeight: 20 },
+  inputHint: { color: MUTED },
+  composeExpand: { color: ACCENT, fontSize: 12, fontWeight: '700' },
+  editorPage: { flex: 1, backgroundColor: BG },
+  editorHeader: { flexDirection: 'row', alignItems: 'center',
+    backgroundColor: PANEL, paddingHorizontal: 14, paddingVertical: 10, gap: 8 },
+  editorTitle: { color: '#f6f7ff', fontSize: 16, fontWeight: '800' },
+  editorSubtitle: { color: MUTED, fontSize: 11, paddingTop: 5 },
+  editorBody: { flex: 1, padding: 12 },
+  editorInput: { flex: 1, minHeight: 160, borderRadius: 12,
+    backgroundColor: '#25324b', color: '#f6f7ff', padding: 14,
+    fontSize: 16, lineHeight: 24 },
+  editorActions: { flexDirection: 'row', alignItems: 'center',
+    justifyContent: 'space-between', paddingTop: 12, paddingBottom: 8, gap: 8 },
   footer: { backgroundColor: '#141e31', color: MUTED, textAlign: 'center',
     fontSize: 9, paddingBottom: 10 },
 });
