@@ -3,6 +3,12 @@ import * as FS from 'expo-file-system/legacy';
 export type Benchmark = {
   modelId: string;
   quant: string;
+  chatId?: string;
+  turnIndex?: number;
+  contextWindow?: number;
+  contextPromptTokens?: number;
+  contextTruncated?: boolean;
+  requestedMaxTokens?: number;
   platform: string;
   device: string;
   date: string;
@@ -40,7 +46,9 @@ export async function appendBenchmark(entry: Benchmark): Promise<void> {
 
 export function csvBenchmark(rows: Benchmark[]): string {
   const fields: (keyof Benchmark)[] = [
-    'date','device','platform','modelId','quant','status','loadMs','ttftMs',
+    'date','device','platform','modelId','quant','chatId','turnIndex','contextWindow',
+    'contextPromptTokens','contextTruncated','requestedMaxTokens',
+    'status','loadMs','ttftMs',
     'promptTokens','prefillTokensPerSec','generatedTokens',
     'decodeTokensPerSec','generationMs','totalMs','gpu','error',
   ];
