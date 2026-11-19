@@ -15,6 +15,12 @@ export type Benchmark = {
   voiceTtsDurationMs?: number;
   voiceRoundtripToSpeechMs?: number;
   voiceTtsStatus?: 'completed' | 'stopped' | 'error';
+  voiceTtsEngine?: 'system' | 'kevoice';
+  voiceTtsModelId?: string;
+  voiceTtsSynthesisMs?: number;
+  voiceTtsModelLoadMs?: number;
+  voiceTtsAudioDurationMs?: number;
+  voiceTtsRealTimeFactor?: number;
   platform: string;
   device: string;
   date: string;
@@ -62,7 +68,9 @@ export async function appendBenchmark(entry: Benchmark): Promise<void> {
 export type VoiceTimingUpdate = Pick<
   Benchmark,
   'voiceTtsStartMs' | 'voiceTtsDurationMs' |
-  'voiceRoundtripToSpeechMs' | 'voiceTtsStatus'
+  'voiceRoundtripToSpeechMs' | 'voiceTtsStatus' |
+  'voiceTtsEngine' | 'voiceTtsModelId' | 'voiceTtsSynthesisMs' |
+  'voiceTtsModelLoadMs' | 'voiceTtsAudioDurationMs' | 'voiceTtsRealTimeFactor'
 >;
 
 export async function updateVoiceBenchmark(
@@ -77,7 +85,8 @@ export function csvBenchmark(rows: Benchmark[]): string {
     'date','device','platform','modelId','quant','chatId','turnIndex','contextWindow',
     'contextPromptTokens','contextTruncated','requestedMaxTokens',
     'voiceLocale','voiceSttMs','voiceTtsStartMs','voiceTtsDurationMs',
-    'voiceRoundtripToSpeechMs','voiceTtsStatus',
+    'voiceRoundtripToSpeechMs','voiceTtsStatus','voiceTtsEngine','voiceTtsModelId',
+    'voiceTtsSynthesisMs','voiceTtsModelLoadMs','voiceTtsAudioDurationMs','voiceTtsRealTimeFactor',
     'status','loadMs','ttftMs',
     'promptTokens','prefillTokensPerSec','generatedTokens',
     'decodeTokensPerSec','generationMs','totalMs','gpu','error',
