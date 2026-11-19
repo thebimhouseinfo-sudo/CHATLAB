@@ -22,7 +22,7 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - uses: android-actions/setup-android@v3
+      # GitHub ubuntu-24.04 already ships the Android SDK; avoid obsolete sdkmanager 'tools'.
       - name: Install JS dependencies and native llama artifacts
         run: npm install --no-audit --no-fund
       - name: Check TypeScript
